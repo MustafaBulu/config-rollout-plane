@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SafeConfig Platform API
-  version: 0.1.0
+  version: 0.2.0
 paths:
   /healthz:
     get:
@@ -17,3 +17,171 @@ paths:
           description: Service is ready
         "503":
           description: Service is not ready
+  /v1/tenants:
+    post:
+      summary: Create tenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "201":
+          description: Tenant created
+    get:
+      summary: List tenants
+      responses:
+        "200":
+          description: Tenant list
+  /v1/tenants/{tenant}:
+    get:
+      summary: Get tenant
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+      responses:
+        "200":
+          description: Tenant
+        "404":
+          description: Tenant not found
+  /v1/tenants/{tenant}/configs:
+    post:
+      summary: Create configuration definition
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateConfigDefinitionRequest"
+      responses:
+        "201":
+          description: Configuration definition created
+    get:
+      summary: List configuration definitions
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+      responses:
+        "200":
+          description: Configuration definitions
+  /v1/tenants/{tenant}/configs/{key}:
+    get:
+      summary: Get configuration definition
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/ConfigKey"
+      responses:
+        "200":
+          description: Configuration definition
+  /v1/tenants/{tenant}/configs/{key}/versions:
+    post:
+      summary: Create immutable configuration version
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/ConfigKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateConfigVersionRequest"
+      responses:
+        "201":
+          description: Configuration version created
+        "400":
+          description: Value does not match JSON Schema
+    get:
+      summary: List configuration versions
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/ConfigKey"
+      responses:
+        "200":
+          description: Configuration versions
+  /v1/tenants/{tenant}/configs/{key}/environments/{environment}/stable:
+    post:
+      summary: Set stable version for an environment
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/ConfigKey"
+        - $ref: "#/components/parameters/Environment"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetStableVersionRequest"
+      responses:
+        "200":
+          description: Stable version updated
+    get:
+      summary: Get stable version for an environment
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/ConfigKey"
+        - $ref: "#/components/parameters/Environment"
+      responses:
+        "200":
+          description: Stable version state
+components:
+  parameters:
+    Tenant:
+      name: tenant
+      in: path
+      required: true
+      schema:
+        type: string
+    ConfigKey:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
+    Environment:
+      name: environment
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [development, staging, production]
+  schemas:
+    CreateTenantRequest:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        owner:
+          type: string
+    CreateConfigDefinitionRequest:
+      type: object
+      required: [key, schema]
+      properties:
+        key:
+          type: string
+        description:
+          type: string
+        schema:
+          type: object
+        default: {}
+    CreateConfigVersionRequest:
+      type: object
+      required: [value]
+      properties:
+        value: {}
+        source_commit_sha:
+          type: string
+        created_by:
+          type: string
+    SetStableVersionRequest:
+      type: object
+      required: [version_number]
+      properties:
+        version_number:
+          type: integer
+          minimum: 1

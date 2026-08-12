@@ -21,7 +21,7 @@ dev-down:
 	docker compose -f $(COMPOSE_FILE) down --remove-orphans
 
 migrate-up:
-	docker compose -f $(COMPOSE_FILE) exec -T postgres psql -U safe_config -d safe_config < migrations/000001_foundation.sql
+	docker compose -f $(COMPOSE_FILE) exec -T postgres sh -c 'for f in /migrations/*.sql; do psql -U safe_config -d safe_config -f "$$f"; done'
 
 clean:
 	go clean

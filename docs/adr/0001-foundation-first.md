@@ -14,4 +14,4 @@ Start with a small Go monorepo skeleton, health endpoints, structured logging, g
 
 ## Consequences
 
-Rollout state machines, JSON Schema validation, agent synchronization, and Prometheus guardrails are deferred until their milestones.
+Rollout state machines, agent synchronization, and Prometheus guardrails are deferred until their milestones.

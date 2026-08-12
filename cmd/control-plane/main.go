@@ -8,7 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"config-rollout-plane/internal/health"
+	"config-rollout-plane/internal/configregistry"
+	"config-rollout-plane/internal/controlplane"
 	"config-rollout-plane/internal/logging"
 	"config-rollout-plane/internal/runtime"
 )
@@ -29,7 +30,8 @@ func main() {
 		ShutdownTimeout: runtime.EnvDuration("CONTROL_PLANE_SHUTDOWN_TIMEOUT", 10*time.Second),
 	}
 
-	handler := health.NewHandler(serviceName, health.StaticChecker{})
+	registry := configregistry.NewService(configregistry.NewMemoryStore(), configregistry.JSONSchemaValidator{})
+	handler := controlplane.NewHandler(registry)
 	if err := runtime.RunHTTPServer(ctx, cfg, handler, logger); err != nil {
 		logger.Error("service stopped with error", slog.Any("error", err))
 		os.Exit(1)
