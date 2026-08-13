@@ -53,4 +53,24 @@ user: safe_config
 password: safe_config
 ```
 
+Apply migrations after PostgreSQL is running:
+
+```bash
+make migrate-up
+```
+
+Run the control plane with PostgreSQL persistence:
+
+```bash
+DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' go run ./cmd/control-plane
+```
+
+If `DATABASE_URL` is not set, the control plane starts with an in-memory store. That mode is useful for tests and quick local API checks, but data is lost when the process exits.
+
+Optional PostgreSQL integration tests:
+
+```bash
+SAFE_CONFIG_TEST_DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' go test ./internal/storage/postgres
+```
+
 Secrets are outside the scope of this platform and must be stored in a dedicated secrets-management system.

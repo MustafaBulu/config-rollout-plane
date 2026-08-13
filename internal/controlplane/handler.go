@@ -15,10 +15,14 @@ type Handler struct {
 }
 
 func NewHandler(registry *configregistry.Service) http.Handler {
+	return NewHandlerWithReadiness(registry, health.StaticChecker{})
+}
+
+func NewHandlerWithReadiness(registry *configregistry.Service, ready health.Checker) http.Handler {
 	h := Handler{registry: registry}
 
 	mux := http.NewServeMux()
-	healthHandler := health.NewHandler("control-plane", health.StaticChecker{})
+	healthHandler := health.NewHandler("control-plane", ready)
 	mux.Handle("/healthz", healthHandler)
 	mux.Handle("/livez", healthHandler)
 	mux.Handle("/readyz", healthHandler)

@@ -10,8 +10,10 @@ import (
 
 	"config-rollout-plane/internal/configregistry"
 	"config-rollout-plane/internal/controlplane"
+	"config-rollout-plane/internal/health"
 	"config-rollout-plane/internal/logging"
 	"config-rollout-plane/internal/runtime"
+	postgresstore "config-rollout-plane/internal/storage/postgres"
 )
 
 func main() {
@@ -30,10 +32,33 @@ func main() {
 		ShutdownTimeout: runtime.EnvDuration("CONTROL_PLANE_SHUTDOWN_TIMEOUT", 10*time.Second),
 	}
 
-	registry := configregistry.NewService(configregistry.NewMemoryStore(), configregistry.JSONSchemaValidator{})
-	handler := controlplane.NewHandler(registry)
+	store, readiness, cleanup := openStore(ctx, logger)
+	defer cleanup()
+	registry := configregistry.NewService(store, configregistry.JSONSchemaValidator{})
+	handler := controlplane.NewHandlerWithReadiness(registry, readiness)
 	if err := runtime.RunHTTPServer(ctx, cfg, handler, logger); err != nil {
 		logger.Error("service stopped with error", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+func openStore(ctx context.Context, logger *slog.Logger) (configregistry.Store, health.Checker, func()) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		logger.Warn("DATABASE_URL is not set; using in-memory config registry store")
+		store := configregistry.NewMemoryStore()
+		return store, health.StaticChecker{}, func() {}
+	}
+
+	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	store, err := postgresstore.NewStore(connectCtx, databaseURL)
+	if err != nil {
+		logger.Error("postgres connection failed", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	logger.Info("using postgres config registry store")
+	return store, store, store.Close
 }
