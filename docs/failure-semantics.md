@@ -1,5 +1,5 @@
 # Failure Semantics
 
-Milestone 0 provides graceful shutdown and health/readiness endpoints.
+The current services provide graceful shutdown and health/readiness endpoints.
 
-Later milestones will define control-plane, data-plane, PostgreSQL, Prometheus, and agent cache failure semantics in executable tests.
+Control-plane, data-plane, PostgreSQL, Prometheus, and agent cache failure behavior should be documented through executable tests as the rollout engine grows.

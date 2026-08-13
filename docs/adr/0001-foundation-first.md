@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The platform's main risk is safe distributed configuration rollout. The project specification requires Milestone 0 before rollout logic.
+The platform's main risk is safe distributed configuration rollout. The project needs a reliable service foundation before rollout logic.
 
 ## Decision
 
@@ -14,4 +14,4 @@ Start with a small Go monorepo skeleton, health endpoints, structured logging, g
 
 ## Consequences
 
-Rollout state machines, agent synchronization, and Prometheus guardrails are deferred until their milestones.
+Rollout state machines and Prometheus guardrails are deferred until the supporting registry, data-plane, and agent behavior are in place.

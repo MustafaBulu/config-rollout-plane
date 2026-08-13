@@ -1,81 +1,197 @@
 # SafeConfig
 
-A Go-based control plane for safely distributing runtime configuration using progressive delivery, health guardrails, and automatic rollback.
+A backend architecture showcase project for safe runtime configuration delivery.
 
-This repository is currently at Milestone 2: data-plane snapshot delivery and agent local caching.
+SafeConfig demonstrates a production-style control-plane/data-plane architecture for distributing
+configuration changes to running services without redeploying application binaries. The project is
+written in Go and focuses on the safety mechanics around configuration definitions, immutable
+versions, agent identity, snapshot delivery, acknowledgements, and last-known-good local caching.
 
-## Commands
+The design goal is not to build a feature flag SaaS clone. The core problem is safer operational
+configuration delivery: services should be able to receive runtime config updates, validate them,
+acknowledge the exact version they received, and continue operating from a local cache during backend
+outages.
 
-```bash
-make build
-make test
-make dev-up
-make dev-down
+Progressive rollout stages, health guardrails, and automatic rollback are planned next.
+
+## Architecture
+
+The platform is organized as a Go monorepo with three runnable binaries.
+
+- `control-plane`: authoritative API for tenants, config definitions, immutable versions, stable environment state, agent registration, heartbeats, and acknowledgements.
+- `data-plane`: read-optimized API that serves agent-specific configuration snapshots with ETag support.
+- `agent`: local sidecar-style process that polls snapshots, validates checksums, writes a durable cache, and exposes config to the application over localhost.
+
+```text
+Developer / API client
+        |
+        v
+Control Plane  -> PostgreSQL
+        |
+        v
+Data Plane
+        |
+        v
+Local Agent  -> application service
 ```
 
-## Services
+The control-plane registry can run against PostgreSQL for durable state. Tests and quick local runs can
+use the in-memory store behind the same Go interface.
 
-- `control-plane`: authoritative configuration registry API, health endpoint on `:8080`
-- `data-plane`: read-optimized snapshot API, health endpoint on `:8081`
-- `agent`: local sidecar-style API with last-known-good cache, health endpoint on `:8082`
+## Configuration Delivery Flow
 
-## Milestone 1 API
+1. A client creates a tenant.
+2. A client creates a configuration definition with a JSON Schema.
+3. Every new config value is validated against the schema.
+4. A valid value creates an immutable version.
+5. A version can be marked stable for an environment.
+6. An agent registers with a bootstrap token and receives an instance credential.
+7. The data plane serves an agent-specific snapshot.
+8. The local agent validates the snapshot checksum and writes it to disk atomically.
+9. The application reads config from the local agent.
+10. If the backend is unavailable later, the local agent keeps serving the last-known-good snapshot.
+
+## Implemented Capabilities
+
+- Go 1.26 monorepo
+- HTTP/JSON APIs using the standard library
+- Structured JSON logging with `slog`
+- Graceful shutdown for all binaries
+- Tenant registry
+- Configuration definitions
+- JSON Schema validation
+- Immutable configuration versions
+- Stable version pointer per config/environment
+- PostgreSQL schema migrations
+- PostgreSQL-backed config registry store
+- In-memory stores for tests and local experiments
+- Agent registration with bootstrap credential exchange
+- Instance credentials bound to one agent identity
+- Agent heartbeat endpoint
+- Agent acknowledgement endpoint
+- Data-plane snapshot endpoint
+- ETag and `If-None-Match` support
+- Credential/path mismatch protection with `403 Forbidden`
+- Agent snapshot polling client
+- Checksum validation before cache writes
+- Atomic local snapshot cache writes
+- Local agent config API
+- Unit and handler tests for core flows
+- Docker Compose PostgreSQL development environment
+- GitHub Actions CI
+
+## Components
+
+### `cmd/control-plane`
+
+Runs the control-plane HTTP API on port `8080` by default.
+
+Main responsibilities:
+
+- config registry writes
+- schema validation
+- stable version state
+- agent registration
+- heartbeat tracking
+- acknowledgement recording
+
+### `cmd/data-plane`
+
+Runs the data-plane HTTP API on port `8081` by default.
+
+Main responsibilities:
+
+- serve agent snapshots
+- enforce credential subject matching
+- return `304 Not Modified` when the agent already has the latest snapshot
+
+### `cmd/agent`
+
+Runs the local agent HTTP API on port `8082` by default.
+
+Main responsibilities:
+
+- poll the data plane
+- validate snapshot checksums
+- write and load local snapshot cache
+- serve config to local applications
+
+## Local Runtime
+
+Start PostgreSQL:
+
+```bash
+docker compose -f deploy/docker-compose/docker-compose.yml up -d
+```
+
+Apply migrations:
+
+```bash
+docker compose -f deploy/docker-compose/docker-compose.yml exec -T postgres sh -c 'for f in /migrations/*.sql; do psql -U safe_config -d safe_config -f "$f"; done'
+```
+
+Run the control plane:
+
+```bash
+DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' \
+AGENT_BOOTSTRAP_TOKEN='dev-bootstrap-token' \
+go run ./cmd/control-plane
+```
+
+Run the data plane with a seeded demo snapshot:
+
+```bash
+DATA_PLANE_AGENT_ID='agent-1' \
+DATA_PLANE_AGENT_TOKEN='<instance credential>' \
+DATA_PLANE_CONFIG_KEY='payment.authorization.timeout' \
+DATA_PLANE_CONFIG_VALUE='1500' \
+go run ./cmd/data-plane
+```
+
+Run the local agent:
+
+```bash
+DATA_PLANE_URL='http://localhost:8081' \
+AGENT_ID='agent-1' \
+AGENT_INSTANCE_CREDENTIAL='<instance credential>' \
+go run ./cmd/agent
+```
+
+## Example API Flow
+
+### 1. Create tenant
 
 ```bash
 curl -X POST localhost:8080/v1/tenants \
   -H "Content-Type: application/json" \
   -d '{"id":"payments","name":"Payments"}'
+```
 
+### 2. Create config definition
+
+```bash
 curl -X POST localhost:8080/v1/tenants/payments/configs \
   -H "Content-Type: application/json" \
   -d '{"key":"payment.authorization.timeout","schema":{"type":"integer","minimum":100,"maximum":10000},"default":2000}'
+```
 
+### 3. Create immutable version
+
+```bash
 curl -X POST localhost:8080/v1/tenants/payments/configs/payment.authorization.timeout/versions \
   -H "Content-Type: application/json" \
   -d '{"value":1500,"created_by":"developer@example.com"}'
+```
 
+### 4. Mark version stable
+
+```bash
 curl -X POST localhost:8080/v1/tenants/payments/configs/payment.authorization.timeout/environments/production/stable \
   -H "Content-Type: application/json" \
   -d '{"version_number":1}'
 ```
 
-## Local Dependencies
-
-`make dev-up` starts PostgreSQL through Docker Compose.
-
-Default database settings:
-
-```text
-host: localhost
-port: 5432
-database: safe_config
-user: safe_config
-password: safe_config
-```
-
-Apply migrations after PostgreSQL is running:
-
-```bash
-make migrate-up
-```
-
-Run the control plane with PostgreSQL persistence:
-
-```bash
-DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' go run ./cmd/control-plane
-```
-
-If `DATABASE_URL` is not set, the control plane starts with an in-memory store. That mode is useful for tests and quick local API checks, but data is lost when the process exits.
-
-Optional PostgreSQL integration tests:
-
-```bash
-SAFE_CONFIG_TEST_DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' go test ./internal/storage/postgres
-```
-
-## Milestone 2 Local Snapshot Flow
-
-Register an agent with the control plane:
+### 5. Register agent
 
 ```bash
 curl -X POST localhost:8080/v1/agents/register \
@@ -83,29 +199,129 @@ curl -X POST localhost:8080/v1/agents/register \
   -d '{"bootstrap_token":"dev-bootstrap-token","id":"agent-1","service":"payment-api","environment":"production","instance":"payment-api-1"}'
 ```
 
-Start a data plane with one seeded snapshot:
+Copy the returned `instance_credential` and use it for data-plane and local-agent requests.
 
-```bash
-DATA_PLANE_AGENT_ID=agent-1 \
-DATA_PLANE_AGENT_TOKEN='<instance credential>' \
-DATA_PLANE_CONFIG_KEY='payment.authorization.timeout' \
-DATA_PLANE_CONFIG_VALUE='1500' \
-go run ./cmd/data-plane
-```
-
-Start an agent that polls the data plane and serves local config:
-
-```bash
-DATA_PLANE_URL='http://localhost:8081' \
-AGENT_ID=agent-1 \
-AGENT_INSTANCE_CREDENTIAL='<instance credential>' \
-go run ./cmd/agent
-```
-
-Read config through the local agent:
+### 6. Read config from local agent
 
 ```bash
 curl localhost:8082/v1/config/payment.authorization.timeout
 ```
 
-Secrets are outside the scope of this platform and must be stored in a dedicated secrets-management system.
+Example response:
+
+```json
+{
+  "key": "payment.authorization.timeout",
+  "version": 1,
+  "value": 1500
+}
+```
+
+## Service URLs
+
+- Control plane: `http://localhost:8080`
+- Data plane: `http://localhost:8081`
+- Local agent: `http://localhost:8082`
+
+## APIs
+
+Control plane:
+
+- `POST /v1/tenants`
+- `GET /v1/tenants`
+- `GET /v1/tenants/{tenant}`
+- `POST /v1/tenants/{tenant}/configs`
+- `GET /v1/tenants/{tenant}/configs`
+- `GET /v1/tenants/{tenant}/configs/{key}`
+- `POST /v1/tenants/{tenant}/configs/{key}/versions`
+- `GET /v1/tenants/{tenant}/configs/{key}/versions`
+- `POST /v1/tenants/{tenant}/configs/{key}/environments/{environment}/stable`
+- `GET /v1/tenants/{tenant}/configs/{key}/environments/{environment}/stable`
+- `POST /v1/agents/register`
+- `POST /v1/agents/{agentID}/heartbeat`
+- `POST /v1/agents/{agentID}/acknowledgements`
+
+Data plane:
+
+- `GET /v1/agents/{agentID}/snapshot`
+
+Local agent:
+
+- `GET /healthz`
+- `GET /readyz`
+- `GET /v1/snapshot`
+- `GET /v1/config/{key}`
+
+OpenAPI documentation is available in `api/openapi.yaml`.
+
+## Configuration
+
+Control plane:
+
+- `CONTROL_PLANE_ADDR` default: `:8080`
+- `DATABASE_URL`
+- `AGENT_BOOTSTRAP_TOKEN` default: `dev-bootstrap-token`
+- `AGENT_CREDENTIAL_TTL` default: `15m`
+
+Data plane:
+
+- `DATA_PLANE_ADDR` default: `:8081`
+- `DATA_PLANE_AGENT_ID`
+- `DATA_PLANE_AGENT_TOKEN`
+- `DATA_PLANE_CONFIG_KEY`
+- `DATA_PLANE_CONFIG_VALUE`
+
+Agent:
+
+- `AGENT_ADDR` default: `:8082`
+- `DATA_PLANE_URL`
+- `AGENT_ID`
+- `AGENT_INSTANCE_CREDENTIAL`
+- `AGENT_CACHE_PATH` default: `var/safeconfig/snapshot.json`
+- `AGENT_POLL_INTERVAL` default: `2s`
+
+## Test
+
+Run all tests:
+
+```bash
+go test ./...
+```
+
+Build all binaries:
+
+```bash
+go build ./cmd/...
+```
+
+Run static checks:
+
+```bash
+go vet ./...
+```
+
+Optional PostgreSQL integration test:
+
+```bash
+SAFE_CONFIG_TEST_DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' \
+go test ./internal/storage/postgres
+```
+
+## Security Notes
+
+- SafeConfig is not a secret manager.
+- Do not store passwords, API keys, private keys, or tokens as configuration values.
+- Development bootstrap tokens are for local use only.
+- Instance credentials are bound to one agent identity.
+- Snapshot requests reject credential/path mismatches with `403 Forbidden`.
+- Token rotation, authorization policy, and persistent audit hardening should be completed before production use.
+
+## Planned Work
+
+- Percentage-based rollout stages
+- Deterministic agent assignment
+- Frozen rollout target cohorts
+- Prometheus guardrail evaluation
+- Automatic rollback
+- Multi-replica control plane behavior
+- Kubernetes deployment examples

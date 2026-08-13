@@ -1,5 +1,5 @@
 # Rollout Model
 
-Rollout behavior is intentionally not implemented in Milestone 0.
+Progressive rollout behavior is not implemented yet.
 
-Future milestones will use explicit state-machine transitions, deterministic agent assignment, frozen stage target cohorts, guardrail evaluation, and automatic rollback.
+The planned rollout engine should use explicit state-machine transitions, deterministic agent assignment, frozen stage target cohorts, guardrail evaluation, and automatic rollback.

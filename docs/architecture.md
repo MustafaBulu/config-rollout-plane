@@ -2,7 +2,7 @@
 
 SafeConfig is split into a control plane, data plane, and local agent.
 
-Milestone 1 adds the configuration registry inside the control plane:
+The control plane includes a configuration registry:
 
 - tenant records
 - configuration definitions
@@ -17,7 +17,7 @@ The control plane can run with two store implementations:
 
 Both implementations satisfy the same `configregistry.Store` interface, so the service layer does not depend on PostgreSQL details.
 
-Milestone 2 adds the data-plane read model and local agent cache. The data-plane endpoint is:
+The data plane exposes an agent-specific read model. The snapshot endpoint is:
 
 ```text
 GET /v1/agents/{agentID}/snapshot
