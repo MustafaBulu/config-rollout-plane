@@ -88,6 +88,11 @@ func assertJSONRequest(t *testing.T, handler http.Handler, method string, path s
 
 func assertRequest(t *testing.T, handler http.Handler, method string, path string, body string, wantStatus int) string {
 	t.Helper()
+	return assertRequestWithHeaders(t, handler, method, path, body, nil, wantStatus)
+}
+
+func assertRequestWithHeaders(t *testing.T, handler http.Handler, method string, path string, body string, headers map[string]string, wantStatus int) string {
+	t.Helper()
 
 	var reader *bytes.Reader
 	if body == "" {
@@ -99,6 +104,9 @@ func assertRequest(t *testing.T, handler http.Handler, method string, path strin
 	req := httptest.NewRequest(method, path, reader)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 	rec := httptest.NewRecorder()
 

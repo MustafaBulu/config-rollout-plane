@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"config-rollout-plane/internal/agentregistry"
 	"config-rollout-plane/internal/configregistry"
 	"config-rollout-plane/internal/controlplane"
 	"config-rollout-plane/internal/health"
@@ -35,7 +36,12 @@ func main() {
 	store, readiness, cleanup := openStore(ctx, logger)
 	defer cleanup()
 	registry := configregistry.NewService(store, configregistry.JSONSchemaValidator{})
-	handler := controlplane.NewHandlerWithReadiness(registry, readiness)
+	agents := agentregistry.NewService(
+		agentregistry.NewMemoryStore(),
+		runtime.EnvString("AGENT_BOOTSTRAP_TOKEN", "dev-bootstrap-token"),
+		runtime.EnvDuration("AGENT_CREDENTIAL_TTL", 15*time.Minute),
+	)
+	handler := controlplane.NewHandlerWithReadiness(registry, agents, readiness)
 	if err := runtime.RunHTTPServer(ctx, cfg, handler, logger); err != nil {
 		logger.Error("service stopped with error", slog.Any("error", err))
 		os.Exit(1)

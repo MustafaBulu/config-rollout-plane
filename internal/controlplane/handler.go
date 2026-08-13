@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
+	"config-rollout-plane/internal/agentregistry"
 	"config-rollout-plane/internal/configregistry"
 	"config-rollout-plane/internal/domain"
 	"config-rollout-plane/internal/health"
@@ -12,14 +14,15 @@ import (
 
 type Handler struct {
 	registry *configregistry.Service
+	agents   *agentregistry.Service
 }
 
 func NewHandler(registry *configregistry.Service) http.Handler {
-	return NewHandlerWithReadiness(registry, health.StaticChecker{})
+	return NewHandlerWithReadiness(registry, nil, health.StaticChecker{})
 }
 
-func NewHandlerWithReadiness(registry *configregistry.Service, ready health.Checker) http.Handler {
-	h := Handler{registry: registry}
+func NewHandlerWithReadiness(registry *configregistry.Service, agents *agentregistry.Service, ready health.Checker) http.Handler {
+	h := Handler{registry: registry, agents: agents}
 
 	mux := http.NewServeMux()
 	healthHandler := health.NewHandler("control-plane", ready)
@@ -40,6 +43,10 @@ func NewHandlerWithReadiness(registry *configregistry.Service, ready health.Chec
 
 	mux.HandleFunc("POST /v1/tenants/{tenant}/configs/{key}/environments/{environment}/stable", h.setStableVersion)
 	mux.HandleFunc("GET /v1/tenants/{tenant}/configs/{key}/environments/{environment}/stable", h.getStableVersion)
+
+	mux.HandleFunc("POST /v1/agents/register", h.registerAgent)
+	mux.HandleFunc("POST /v1/agents/{agentID}/heartbeat", h.agentHeartbeat)
+	mux.HandleFunc("POST /v1/agents/{agentID}/acknowledgements", h.agentAcknowledgement)
 
 	return mux
 }
@@ -201,6 +208,75 @@ func (h Handler) getStableVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, environmentStateResponseFromDomain(state))
 }
 
+func (h Handler) registerAgent(w http.ResponseWriter, r *http.Request) {
+	if h.agents == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "unavailable", Message: "agent registry is unavailable"})
+		return
+	}
+
+	var req registerAgentRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+
+	result, err := h.agents.Register(r.Context(), agentregistry.RegisterInput{
+		BootstrapToken: req.BootstrapToken,
+		ID:             req.ID,
+		Service:        req.Service,
+		Environment:    domain.Environment(req.Environment),
+		Zone:           req.Zone,
+		Instance:       req.Instance,
+		Labels:         req.Labels,
+	})
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, registerAgentResponseFromDomain(result))
+}
+
+func (h Handler) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
+	if h.agents == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "unavailable", Message: "agent registry is unavailable"})
+		return
+	}
+
+	agent, err := h.agents.Heartbeat(r.Context(), r.PathValue("agentID"), bearerToken(r.Header.Get("Authorization")))
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, agentResponseFromDomain(agent))
+}
+
+func (h Handler) agentAcknowledgement(w http.ResponseWriter, r *http.Request) {
+	if h.agents == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "unavailable", Message: "agent registry is unavailable"})
+		return
+	}
+
+	var req acknowledgementRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+
+	ack, err := h.agents.Acknowledge(r.Context(), agentregistry.AcknowledgeInput{
+		AgentID:            r.PathValue("agentID"),
+		Token:              bearerToken(r.Header.Get("Authorization")),
+		ConfigDefinitionID: req.ConfigDefinitionID,
+		VersionID:          req.VersionID,
+		SnapshotRevision:   req.SnapshotRevision,
+	})
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, acknowledgementResponseFromDomain(ack))
+}
+
 func decodeRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
 	defer r.Body.Close()
 
@@ -223,6 +299,21 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, errorResponse{Error: "already_exists", Message: err.Error()})
 	case errors.Is(err, configregistry.ErrConflict):
 		writeJSON(w, http.StatusConflict, errorResponse{Error: "conflict", Message: err.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal_error", Message: "request failed"})
+	}
+}
+
+func writeAgentError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, agentregistry.ErrInvalidInput):
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid_input", Message: err.Error()})
+	case errors.Is(err, agentregistry.ErrUnauthorized), errors.Is(err, agentregistry.ErrExpiredCredential):
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized", Message: err.Error()})
+	case errors.Is(err, agentregistry.ErrForbidden):
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: "forbidden", Message: err.Error()})
+	case errors.Is(err, agentregistry.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: "not_found", Message: err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal_error", Message: "request failed"})
 	}
@@ -256,6 +347,22 @@ type createVersionRequest struct {
 
 type setStableVersionRequest struct {
 	VersionNumber int `json:"version_number"`
+}
+
+type registerAgentRequest struct {
+	BootstrapToken string            `json:"bootstrap_token"`
+	ID             string            `json:"id"`
+	Service        string            `json:"service"`
+	Environment    string            `json:"environment"`
+	Zone           string            `json:"zone"`
+	Instance       string            `json:"instance"`
+	Labels         map[string]string `json:"labels"`
+}
+
+type acknowledgementRequest struct {
+	ConfigDefinitionID string `json:"config_definition_id"`
+	VersionID          string `json:"version_id"`
+	SnapshotRevision   int64  `json:"snapshot_revision"`
 }
 
 type tenantResponse struct {
@@ -294,6 +401,33 @@ type environmentStateResponse struct {
 	StableVersionID    string `json:"stable_version_id"`
 	ActiveRolloutID    string `json:"active_rollout_id,omitempty"`
 	UpdatedAt          string `json:"updated_at"`
+}
+
+type registerAgentResponse struct {
+	Agent              agentResponse `json:"agent"`
+	InstanceCredential string        `json:"instance_credential"`
+	ExpiresAt          string        `json:"expires_at"`
+}
+
+type agentResponse struct {
+	ID           string            `json:"id"`
+	Service      string            `json:"service"`
+	Environment  string            `json:"environment"`
+	Zone         string            `json:"zone,omitempty"`
+	Instance     string            `json:"instance"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	RegisteredAt string            `json:"registered_at"`
+	LastSeenAt   string            `json:"last_seen_at"`
+}
+
+type acknowledgementResponse struct {
+	ID                 string `json:"id"`
+	AgentID            string `json:"agent_id"`
+	ConfigDefinitionID string `json:"config_definition_id"`
+	VersionID          string `json:"version_id"`
+	SnapshotRevision   int64  `json:"snapshot_revision"`
+	Counted            bool   `json:"counted"`
+	CreatedAt          string `json:"created_at"`
 }
 
 type errorResponse struct {
@@ -345,6 +479,51 @@ func environmentStateResponseFromDomain(state domain.ConfigEnvironmentState) env
 		ActiveRolloutID:    state.ActiveRolloutID,
 		UpdatedAt:          state.UpdatedAt.Format(timeFormat),
 	}
+}
+
+func registerAgentResponseFromDomain(result agentregistry.RegisterResult) registerAgentResponse {
+	return registerAgentResponse{
+		Agent:              agentResponseFromDomain(result.Agent),
+		InstanceCredential: result.Credential.Token,
+		ExpiresAt:          result.Credential.ExpiresAt.Format(timeFormat),
+	}
+}
+
+func agentResponseFromDomain(agent domain.Agent) agentResponse {
+	return agentResponse{
+		ID:           agent.ID,
+		Service:      agent.Service,
+		Environment:  string(agent.Environment),
+		Zone:         agent.Zone,
+		Instance:     agent.Instance,
+		Labels:       agent.Labels,
+		RegisteredAt: agent.RegisteredAt.Format(timeFormat),
+		LastSeenAt:   agent.LastSeenAt.Format(timeFormat),
+	}
+}
+
+func acknowledgementResponseFromDomain(ack domain.AgentAcknowledgement) acknowledgementResponse {
+	return acknowledgementResponse{
+		ID:                 ack.ID,
+		AgentID:            ack.AgentID,
+		ConfigDefinitionID: ack.ConfigDefinitionID,
+		VersionID:          ack.VersionID,
+		SnapshotRevision:   ack.SnapshotRevision,
+		Counted:            ack.Counted,
+		CreatedAt:          ack.CreatedAt.Format(timeFormat),
+	}
+}
+
+func bearerToken(header string) string {
+	if header == "" {
+		return ""
+	}
+
+	kind, token, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(kind, "Bearer") {
+		return ""
+	}
+	return token
 }
 
 const timeFormat = "2006-01-02T15:04:05Z07:00"

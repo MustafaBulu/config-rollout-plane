@@ -124,7 +124,78 @@ paths:
       responses:
         "200":
           description: Stable version state
+  /v1/agents/{agentID}/snapshot:
+    get:
+      summary: Get agent configuration snapshot
+      parameters:
+        - name: agentID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Snapshot returned
+        "304":
+          description: Snapshot has not changed
+        "403":
+          description: Credential subject does not match agent path
+  /v1/agents/register:
+    post:
+      summary: Register agent and exchange bootstrap token for instance credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterAgentRequest"
+      responses:
+        "201":
+          description: Agent registered
+        "401":
+          description: Invalid bootstrap token
+  /v1/agents/{agentID}/heartbeat:
+    post:
+      summary: Record agent heartbeat
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Heartbeat recorded
+        "403":
+          description: Credential subject does not match agent path
+  /v1/agents/{agentID}/acknowledgements:
+    post:
+      summary: Record agent acknowledgement
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAcknowledgementRequest"
+      responses:
+        "201":
+          description: Acknowledgement recorded
+        "403":
+          description: Credential subject does not match agent path
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
   parameters:
     Tenant:
       name: tenant
@@ -145,6 +216,12 @@ components:
       schema:
         type: string
         enum: [development, staging, production]
+    AgentID:
+      name: agentID
+      in: path
+      required: true
+      schema:
+        type: string
   schemas:
     CreateTenantRequest:
       type: object
@@ -183,5 +260,37 @@ components:
       required: [version_number]
       properties:
         version_number:
+          type: integer
+          minimum: 1
+    RegisterAgentRequest:
+      type: object
+      required: [bootstrap_token, service, environment, instance]
+      properties:
+        bootstrap_token:
+          type: string
+        id:
+          type: string
+        service:
+          type: string
+        environment:
+          type: string
+          enum: [development, staging, production]
+        zone:
+          type: string
+        instance:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+    CreateAcknowledgementRequest:
+      type: object
+      required: [config_definition_id, version_id, snapshot_revision]
+      properties:
+        config_definition_id:
+          type: string
+        version_id:
+          type: string
+        snapshot_revision:
           type: integer
           minimum: 1

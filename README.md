@@ -2,7 +2,7 @@
 
 A Go-based control plane for safely distributing runtime configuration using progressive delivery, health guardrails, and automatic rollback.
 
-This repository is currently at Milestone 1: config registry.
+This repository is currently at Milestone 2: data-plane snapshot delivery and agent local caching.
 
 ## Commands
 
@@ -17,7 +17,7 @@ make dev-down
 
 - `control-plane`: authoritative configuration registry API, health endpoint on `:8080`
 - `data-plane`: read-optimized snapshot API, health endpoint on `:8081`
-- `agent`: local sidecar-style API placeholder, health endpoint on `:8082`
+- `agent`: local sidecar-style API with last-known-good cache, health endpoint on `:8082`
 
 ## Milestone 1 API
 
@@ -71,6 +71,41 @@ Optional PostgreSQL integration tests:
 
 ```bash
 SAFE_CONFIG_TEST_DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' go test ./internal/storage/postgres
+```
+
+## Milestone 2 Local Snapshot Flow
+
+Register an agent with the control plane:
+
+```bash
+curl -X POST localhost:8080/v1/agents/register \
+  -H "Content-Type: application/json" \
+  -d '{"bootstrap_token":"dev-bootstrap-token","id":"agent-1","service":"payment-api","environment":"production","instance":"payment-api-1"}'
+```
+
+Start a data plane with one seeded snapshot:
+
+```bash
+DATA_PLANE_AGENT_ID=agent-1 \
+DATA_PLANE_AGENT_TOKEN='<instance credential>' \
+DATA_PLANE_CONFIG_KEY='payment.authorization.timeout' \
+DATA_PLANE_CONFIG_VALUE='1500' \
+go run ./cmd/data-plane
+```
+
+Start an agent that polls the data plane and serves local config:
+
+```bash
+DATA_PLANE_URL='http://localhost:8081' \
+AGENT_ID=agent-1 \
+AGENT_INSTANCE_CREDENTIAL='<instance credential>' \
+go run ./cmd/agent
+```
+
+Read config through the local agent:
+
+```bash
+curl localhost:8082/v1/config/payment.authorization.timeout
 ```
 
 Secrets are outside the scope of this platform and must be stored in a dedicated secrets-management system.

@@ -50,3 +50,31 @@ type ConfigEnvironmentState struct {
 	ActiveRolloutID    string
 	UpdatedAt          time.Time
 }
+
+type Agent struct {
+	ID           string
+	Service      string
+	Environment  Environment
+	Zone         string
+	Instance     string
+	Labels       map[string]string
+	RegisteredAt time.Time
+	LastSeenAt   time.Time
+}
+
+type AgentCredential struct {
+	Token     string
+	AgentID   string
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+type AgentAcknowledgement struct {
+	ID                 string
+	AgentID            string
+	ConfigDefinitionID string
+	VersionID          string
+	SnapshotRevision   int64
+	Counted            bool
+	CreatedAt          time.Time
+}

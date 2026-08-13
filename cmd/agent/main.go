@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"config-rollout-plane/internal/health"
+	"config-rollout-plane/internal/agent"
 	"config-rollout-plane/internal/logging"
 	"config-rollout-plane/internal/runtime"
 )
@@ -29,7 +29,34 @@ func main() {
 		ShutdownTimeout: runtime.EnvDuration("AGENT_SHUTDOWN_TIMEOUT", 10*time.Second),
 	}
 
-	handler := health.NewHandler(serviceName, health.StaticChecker{})
+	cache := agent.NewSnapshotCache(runtime.EnvString("AGENT_CACHE_PATH", "var/safeconfig/snapshot.json"))
+	if err := cache.Load(ctx); err != nil {
+		logger.Warn("snapshot cache not loaded", slog.Any("error", err))
+	}
+
+	dataPlaneURL := os.Getenv("DATA_PLANE_URL")
+	agentID := os.Getenv("AGENT_ID")
+	instanceCredential := os.Getenv("AGENT_INSTANCE_CREDENTIAL")
+	if dataPlaneURL != "" && agentID != "" && instanceCredential != "" {
+		syncer := &agent.Syncer{
+			Client: agent.SnapshotClient{
+				BaseURL: dataPlaneURL,
+				AgentID: agentID,
+				Token:   instanceCredential,
+			},
+			Cache:        cache,
+			PollInterval: runtime.EnvDuration("AGENT_POLL_INTERVAL", 2*time.Second),
+		}
+		go func() {
+			if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
+				logger.Error("agent sync stopped", slog.Any("error", err))
+			}
+		}()
+	} else {
+		logger.Warn("agent remote sync disabled; DATA_PLANE_URL, AGENT_ID, or AGENT_INSTANCE_CREDENTIAL is missing")
+	}
+
+	handler := agent.NewHandler(cache)
 	if err := runtime.RunHTTPServer(ctx, cfg, handler, logger); err != nil {
 		logger.Error("service stopped with error", slog.Any("error", err))
 		os.Exit(1)
