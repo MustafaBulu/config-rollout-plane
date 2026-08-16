@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
+	"config-rollout-plane/internal/agentregistry"
 	"config-rollout-plane/internal/configregistry"
 	"config-rollout-plane/internal/domain"
+	rolloutpkg "config-rollout-plane/internal/rollout"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -36,6 +39,103 @@ func (s *Store) Close() {
 
 func (s *Store) Check(ctx context.Context) error {
 	return s.pool.Ping(ctx)
+}
+
+func (s *Store) SaveAgent(ctx context.Context, agent domain.Agent) error {
+	labels, err := json.Marshal(agent.Labels)
+	if err != nil {
+		return fmt.Errorf("%w: labels", agentregistry.ErrInvalidInput)
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO agents (id, service, environment, zone, instance, labels, registered_at, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (id)
+		DO UPDATE SET
+			service = EXCLUDED.service,
+			environment = EXCLUDED.environment,
+			zone = EXCLUDED.zone,
+			instance = EXCLUDED.instance,
+			labels = EXCLUDED.labels,
+			last_seen_at = EXCLUDED.last_seen_at
+	`, agent.ID, agent.Service, string(agent.Environment), agent.Zone, agent.Instance, labels, agent.RegisteredAt, agent.LastSeenAt)
+	return mapAgentError(err)
+}
+
+func (s *Store) GetAgent(ctx context.Context, agentID string) (domain.Agent, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT id, service, environment, zone, instance, labels, registered_at, last_seen_at
+		FROM agents
+		WHERE id = $1
+	`, agentID)
+
+	agent, err := scanAgent(row)
+	return agent, mapAgentError(err)
+}
+
+func (s *Store) ListAgents(ctx context.Context) ([]domain.Agent, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, service, environment, zone, instance, labels, registered_at, last_seen_at
+		FROM agents
+		ORDER BY id
+	`)
+	if err != nil {
+		return nil, mapAgentError(err)
+	}
+	defer rows.Close()
+
+	var agents []domain.Agent
+	for rows.Next() {
+		agent, err := scanAgent(rows)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, mapAgentError(rows.Err())
+}
+
+func (s *Store) SaveCredential(ctx context.Context, credential domain.AgentCredential) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO agent_credentials (token, agent_id, expires_at, created_at)
+		VALUES ($1, $2, $3, $4)
+	`, credential.Token, credential.AgentID, credential.ExpiresAt, credential.CreatedAt)
+	return mapAgentError(err)
+}
+
+func (s *Store) GetCredential(ctx context.Context, token string) (domain.AgentCredential, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT token, agent_id, expires_at, created_at
+		FROM agent_credentials
+		WHERE token = $1
+	`, token)
+
+	credential, err := scanCredential(row)
+	return credential, mapAgentError(err)
+}
+
+func (s *Store) TouchHeartbeat(ctx context.Context, agentID string, seenAt time.Time) (domain.Agent, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE agents
+		SET last_seen_at = $2
+		WHERE id = $1
+		RETURNING id, service, environment, zone, instance, labels, registered_at, last_seen_at
+	`, agentID, seenAt)
+
+	agent, err := scanAgent(row)
+	return agent, mapAgentError(err)
+}
+
+func (s *Store) SaveAcknowledgement(ctx context.Context, acknowledgement domain.AgentAcknowledgement) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO agent_acknowledgements (
+			id, agent_id, config_definition_id, version_id, snapshot_revision, counted, created_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (agent_id, config_definition_id, version_id, snapshot_revision)
+		DO NOTHING
+	`, acknowledgement.ID, acknowledgement.AgentID, acknowledgement.ConfigDefinitionID, acknowledgement.VersionID, acknowledgement.SnapshotRevision, acknowledgement.Counted, acknowledgement.CreatedAt)
+	return mapAgentError(err)
 }
 
 func (s *Store) CreateTenant(ctx context.Context, tenant domain.Tenant) error {
@@ -223,8 +323,320 @@ func (s *Store) GetEnvironmentState(ctx context.Context, configDefinitionID stri
 	return state, mapError(err)
 }
 
+func (s *Store) CreateRollout(ctx context.Context, rollout rolloutpkg.Rollout, stages []rolloutpkg.Stage) error {
+	targetServices, err := json.Marshal(rollout.TargetServices)
+	if err != nil {
+		return fmt.Errorf("%w: target services", rolloutpkg.ErrInvalidInput)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return mapRolloutError(err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO rollouts (
+			id,
+			tenant_id,
+			config_definition_id,
+			config_key,
+			environment,
+			target_services,
+			stable_version_id,
+			candidate_version_id,
+			candidate_version_number,
+			state,
+			current_stage_id,
+			current_stage_index,
+			required_ack_percentage,
+			stage_started_at,
+			deployment_timeout_seconds,
+			created_at,
+			updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+	`, rollout.ID, rollout.TenantID, rollout.ConfigDefinitionID, rollout.ConfigKey, string(rollout.Environment), targetServices, rollout.StableVersionID, rollout.CandidateVersionID, rollout.CandidateVersion, string(rollout.State), rollout.CurrentStageID, rollout.CurrentStageIndex, rollout.RequiredAckPercent, rollout.StageStartedAt, durationSeconds(rollout.DeploymentTimeout), rollout.CreatedAt, rollout.UpdatedAt)
+	if err != nil {
+		return mapRolloutError(err)
+	}
+
+	for i, stage := range stages {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO rollout_stages (
+				id, rollout_id, stage_order, percentage, minimum_duration_seconds
+			)
+			VALUES ($1, $2, $3, $4, $5)
+		`, stage.ID, rollout.ID, i+1, stage.Percentage, durationSeconds(stage.MinimumDuration))
+		if err != nil {
+			return mapRolloutError(err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return mapRolloutError(err)
+	}
+	return nil
+}
+
+func (s *Store) GetRollout(ctx context.Context, rolloutID string) (rolloutpkg.Rollout, error) {
+	row := s.pool.QueryRow(ctx, rolloutSelectSQL()+`
+		WHERE id = $1
+	`, rolloutID)
+
+	rollout, err := scanRollout(row)
+	return rollout, mapRolloutError(err)
+}
+
+func (s *Store) GetActiveRollout(ctx context.Context, configDefinitionID string, environment string) (rolloutpkg.Rollout, error) {
+	row := s.pool.QueryRow(ctx, rolloutSelectSQL()+`
+		WHERE config_definition_id = $1
+		  AND environment = $2
+		  AND state IN ('PENDING', 'VALIDATING', 'READY', 'DEPLOYING', 'EVALUATING', 'PROMOTING', 'PAUSED', 'ROLLING_BACK')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, configDefinitionID, environment)
+
+	rollout, err := scanRollout(row)
+	return rollout, mapRolloutError(err)
+}
+
+func (s *Store) ListActiveRollouts(ctx context.Context) ([]rolloutpkg.Rollout, error) {
+	rows, err := s.pool.Query(ctx, rolloutSelectSQL()+`
+		WHERE state IN ('PENDING', 'VALIDATING', 'READY', 'DEPLOYING', 'EVALUATING', 'PROMOTING', 'PAUSED', 'ROLLING_BACK')
+		ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, mapRolloutError(err)
+	}
+	defer rows.Close()
+
+	var rollouts []rolloutpkg.Rollout
+	for rows.Next() {
+		rollout, err := scanRollout(rows)
+		if err != nil {
+			return nil, err
+		}
+		rollouts = append(rollouts, rollout)
+	}
+	return rollouts, mapRolloutError(rows.Err())
+}
+
+func (s *Store) UpdateRollout(ctx context.Context, rollout rolloutpkg.Rollout) error {
+	targetServices, err := json.Marshal(rollout.TargetServices)
+	if err != nil {
+		return fmt.Errorf("%w: target services", rolloutpkg.ErrInvalidInput)
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE rollouts
+		SET tenant_id = $2,
+			config_definition_id = $3,
+			config_key = $4,
+			environment = $5,
+			target_services = $6,
+			stable_version_id = $7,
+			candidate_version_id = $8,
+			candidate_version_number = $9,
+			state = $10,
+			current_stage_id = $11,
+			current_stage_index = $12,
+			required_ack_percentage = $13,
+			stage_started_at = $14,
+			deployment_timeout_seconds = $15,
+			updated_at = $16
+		WHERE id = $1
+	`, rollout.ID, rollout.TenantID, rollout.ConfigDefinitionID, rollout.ConfigKey, string(rollout.Environment), targetServices, rollout.StableVersionID, rollout.CandidateVersionID, rollout.CandidateVersion, string(rollout.State), rollout.CurrentStageID, rollout.CurrentStageIndex, rollout.RequiredAckPercent, rollout.StageStartedAt, durationSeconds(rollout.DeploymentTimeout), rollout.UpdatedAt)
+	if err != nil {
+		return mapRolloutError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return rolloutpkg.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ListStages(ctx context.Context, rolloutID string) ([]rolloutpkg.Stage, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, percentage, minimum_duration_seconds
+		FROM rollout_stages
+		WHERE rollout_id = $1
+		ORDER BY stage_order
+	`, rolloutID)
+	if err != nil {
+		return nil, mapRolloutError(err)
+	}
+	defer rows.Close()
+
+	var stages []rolloutpkg.Stage
+	for rows.Next() {
+		stage, err := scanStage(rows)
+		if err != nil {
+			return nil, err
+		}
+		stages = append(stages, stage)
+	}
+	return stages, mapRolloutError(rows.Err())
+}
+
+func (s *Store) SaveStageTargets(ctx context.Context, targets []rolloutpkg.StageTarget) error {
+	for _, target := range targets {
+		if err := s.insertStageTarget(ctx, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ReplaceStageTargets(ctx context.Context, rolloutID string, stageID string, targets []rolloutpkg.StageTarget) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return mapRolloutError(err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM rollout_stage_targets
+		WHERE rollout_id = $1 AND stage_id = $2
+	`, rolloutID, stageID); err != nil {
+		return mapRolloutError(err)
+	}
+
+	for _, target := range targets {
+		if err := insertStageTarget(ctx, tx, target); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return mapRolloutError(err)
+	}
+	return nil
+}
+
+func (s *Store) ListStageTargets(ctx context.Context, rolloutID string, stageID string) ([]rolloutpkg.StageTarget, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT rollout_id, stage_id, agent_id, bucket, expected_version_id, snapshot_revision, created_at, acked_at, status
+		FROM rollout_stage_targets
+		WHERE rollout_id = $1 AND stage_id = $2
+		ORDER BY bucket, agent_id
+	`, rolloutID, stageID)
+	if err != nil {
+		return nil, mapRolloutError(err)
+	}
+	defer rows.Close()
+
+	var targets []rolloutpkg.StageTarget
+	for rows.Next() {
+		target, err := scanStageTarget(rows)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, target)
+	}
+	return targets, mapRolloutError(rows.Err())
+}
+
+func (s *Store) NextSnapshotRevision(ctx context.Context) (int64, error) {
+	var revision int64
+	if err := s.pool.QueryRow(ctx, `SELECT nextval('snapshot_revisions')`).Scan(&revision); err != nil {
+		return 0, mapRolloutError(err)
+	}
+	return revision, nil
+}
+
+func (s *Store) insertStageTarget(ctx context.Context, target rolloutpkg.StageTarget) error {
+	return insertStageTarget(ctx, s.pool, target)
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
+}
+
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+func rolloutSelectSQL() string {
+	return `
+		SELECT
+			id,
+			tenant_id,
+			config_definition_id,
+			config_key,
+			environment,
+			target_services,
+			stable_version_id,
+			candidate_version_id,
+			candidate_version_number,
+			state,
+			current_stage_id,
+			current_stage_index,
+			required_ack_percentage,
+			stage_started_at,
+			deployment_timeout_seconds,
+			created_at,
+			updated_at
+		FROM rollouts
+	`
+}
+
+func insertStageTarget(ctx context.Context, exec execer, target rolloutpkg.StageTarget) error {
+	_, err := exec.Exec(ctx, `
+		INSERT INTO rollout_stage_targets (
+			rollout_id,
+			stage_id,
+			agent_id,
+			bucket,
+			expected_version_id,
+			snapshot_revision,
+			status,
+			created_at,
+			acked_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (rollout_id, stage_id, agent_id)
+		DO UPDATE SET
+			bucket = EXCLUDED.bucket,
+			expected_version_id = EXCLUDED.expected_version_id,
+			snapshot_revision = EXCLUDED.snapshot_revision,
+			status = EXCLUDED.status,
+			created_at = EXCLUDED.created_at,
+			acked_at = EXCLUDED.acked_at
+	`, target.RolloutID, target.StageID, target.AgentID, target.Bucket, target.ExpectedVersionID, target.SnapshotRevision, string(target.Status), target.CreatedAt, nullableTime(target.AckedAt))
+	return mapRolloutError(err)
+}
+
+func scanAgent(row rowScanner) (domain.Agent, error) {
+	var agent domain.Agent
+	var environment string
+	var labels []byte
+	err := row.Scan(
+		&agent.ID,
+		&agent.Service,
+		&environment,
+		&agent.Zone,
+		&agent.Instance,
+		&labels,
+		&agent.RegisteredAt,
+		&agent.LastSeenAt,
+	)
+	if err != nil {
+		return domain.Agent{}, mapAgentError(err)
+	}
+	if len(labels) > 0 {
+		if err := json.Unmarshal(labels, &agent.Labels); err != nil {
+			return domain.Agent{}, err
+		}
+	}
+	agent.Environment = domain.Environment(environment)
+	return agent, nil
+}
+
+func scanCredential(row rowScanner) (domain.AgentCredential, error) {
+	var credential domain.AgentCredential
+	err := row.Scan(&credential.Token, &credential.AgentID, &credential.ExpiresAt, &credential.CreatedAt)
+	return credential, mapAgentError(err)
 }
 
 func scanTenant(row rowScanner) (domain.Tenant, error) {
@@ -280,6 +692,81 @@ func scanEnvironmentState(row rowScanner) (domain.ConfigEnvironmentState, error)
 	return state, mapError(err)
 }
 
+func scanRollout(row rowScanner) (rolloutpkg.Rollout, error) {
+	var rollout rolloutpkg.Rollout
+	var environment string
+	var state string
+	var targetServices []byte
+	var deploymentTimeoutSeconds int
+	err := row.Scan(
+		&rollout.ID,
+		&rollout.TenantID,
+		&rollout.ConfigDefinitionID,
+		&rollout.ConfigKey,
+		&environment,
+		&targetServices,
+		&rollout.StableVersionID,
+		&rollout.CandidateVersionID,
+		&rollout.CandidateVersion,
+		&state,
+		&rollout.CurrentStageID,
+		&rollout.CurrentStageIndex,
+		&rollout.RequiredAckPercent,
+		&rollout.StageStartedAt,
+		&deploymentTimeoutSeconds,
+		&rollout.CreatedAt,
+		&rollout.UpdatedAt,
+	)
+	if err != nil {
+		return rolloutpkg.Rollout{}, mapRolloutError(err)
+	}
+	if len(targetServices) > 0 {
+		if err := json.Unmarshal(targetServices, &rollout.TargetServices); err != nil {
+			return rolloutpkg.Rollout{}, err
+		}
+	}
+	rollout.Environment = domain.Environment(environment)
+	rollout.State = rolloutpkg.State(state)
+	rollout.DeploymentTimeout = time.Duration(deploymentTimeoutSeconds) * time.Second
+	return rollout, nil
+}
+
+func scanStage(row rowScanner) (rolloutpkg.Stage, error) {
+	var stage rolloutpkg.Stage
+	var minimumDurationSeconds int
+	err := row.Scan(&stage.ID, &stage.Percentage, &minimumDurationSeconds)
+	if err != nil {
+		return rolloutpkg.Stage{}, mapRolloutError(err)
+	}
+	stage.MinimumDuration = time.Duration(minimumDurationSeconds) * time.Second
+	return stage, nil
+}
+
+func scanStageTarget(row rowScanner) (rolloutpkg.StageTarget, error) {
+	var target rolloutpkg.StageTarget
+	var status string
+	var ackedAt *time.Time
+	err := row.Scan(
+		&target.RolloutID,
+		&target.StageID,
+		&target.AgentID,
+		&target.Bucket,
+		&target.ExpectedVersionID,
+		&target.SnapshotRevision,
+		&target.CreatedAt,
+		&ackedAt,
+		&status,
+	)
+	if err != nil {
+		return rolloutpkg.StageTarget{}, mapRolloutError(err)
+	}
+	if ackedAt != nil {
+		target.AckedAt = *ackedAt
+	}
+	target.Status = rolloutpkg.TargetStatus(status)
+	return target, nil
+}
+
 func nullableJSON(value json.RawMessage) any {
 	if len(value) == 0 {
 		return nil
@@ -292,6 +779,20 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
+}
+
+func durationSeconds(value time.Duration) int {
+	if value <= 0 {
+		return 0
+	}
+	return int(value / time.Second)
 }
 
 func mapError(err error) error {
@@ -317,7 +818,53 @@ func mapError(err error) error {
 	return err
 }
 
+func mapAgentError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return agentregistry.ErrNotFound
+	}
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23503":
+			return fmt.Errorf("%w: %s", agentregistry.ErrNotFound, pgErr.ConstraintName)
+		case "23514", "22P02":
+			return fmt.Errorf("%w: %s", agentregistry.ErrInvalidInput, pgErr.ConstraintName)
+		}
+	}
+
+	return err
+}
+
+func mapRolloutError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return rolloutpkg.ErrNotFound
+	}
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23505":
+			return fmt.Errorf("%w: %s", rolloutpkg.ErrConflict, pgErr.ConstraintName)
+		case "23503":
+			return fmt.Errorf("%w: %s", rolloutpkg.ErrNotFound, pgErr.ConstraintName)
+		case "23514", "22P02":
+			return fmt.Errorf("%w: %s", rolloutpkg.ErrInvalidInput, pgErr.ConstraintName)
+		}
+	}
+
+	return err
+}
+
 var _ configregistry.Store = (*Store)(nil)
+var _ agentregistry.Store = (*Store)(nil)
+var _ rolloutpkg.Store = (*Store)(nil)
 var _ interface {
 	Check(context.Context) error
 	Close()

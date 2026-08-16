@@ -5,16 +5,19 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"config-rollout-plane/internal/agentregistry"
 	"config-rollout-plane/internal/configregistry"
 	"config-rollout-plane/internal/domain"
 	"config-rollout-plane/internal/health"
+	"config-rollout-plane/internal/rollout"
 )
 
 type Handler struct {
 	registry *configregistry.Service
 	agents   *agentregistry.Service
+	rollouts *rollout.Service
 }
 
 func NewHandler(registry *configregistry.Service) http.Handler {
@@ -22,7 +25,11 @@ func NewHandler(registry *configregistry.Service) http.Handler {
 }
 
 func NewHandlerWithReadiness(registry *configregistry.Service, agents *agentregistry.Service, ready health.Checker) http.Handler {
-	h := Handler{registry: registry, agents: agents}
+	return NewHandlerWithServices(registry, agents, nil, ready)
+}
+
+func NewHandlerWithServices(registry *configregistry.Service, agents *agentregistry.Service, rollouts *rollout.Service, ready health.Checker) http.Handler {
+	h := Handler{registry: registry, agents: agents, rollouts: rollouts}
 
 	mux := http.NewServeMux()
 	healthHandler := health.NewHandler("control-plane", ready)
@@ -47,6 +54,9 @@ func NewHandlerWithReadiness(registry *configregistry.Service, agents *agentregi
 	mux.HandleFunc("POST /v1/agents/register", h.registerAgent)
 	mux.HandleFunc("POST /v1/agents/{agentID}/heartbeat", h.agentHeartbeat)
 	mux.HandleFunc("POST /v1/agents/{agentID}/acknowledgements", h.agentAcknowledgement)
+
+	mux.HandleFunc("POST /v1/rollouts", h.createRollout)
+	mux.HandleFunc("GET /v1/rollouts/{rolloutID}", h.getRollout)
 
 	return mux
 }
@@ -274,7 +284,73 @@ func (h Handler) agentAcknowledgement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, acknowledgementResponseFromDomain(ack))
+	var rolloutResult *rolloutAckResponse
+	if h.rollouts != nil && req.RolloutID != "" && req.StageID != "" {
+		result, err := h.rollouts.Acknowledge(r.Context(), rollout.AcknowledgeInput{
+			RolloutID:        req.RolloutID,
+			StageID:          req.StageID,
+			AgentID:          r.PathValue("agentID"),
+			VersionID:        req.VersionID,
+			SnapshotRevision: req.SnapshotRevision,
+		})
+		if err != nil {
+			writeRolloutError(w, err)
+			return
+		}
+		rolloutResult = &rolloutAckResponse{
+			Counted:  result.Counted,
+			Decision: string(result.Decision),
+			Coverage: coverageResponseFromDomain(result.Coverage),
+		}
+	}
+
+	response := acknowledgementResponseFromDomain(ack)
+	response.Rollout = rolloutResult
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func (h Handler) createRollout(w http.ResponseWriter, r *http.Request) {
+	if h.rollouts == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "unavailable", Message: "rollout service is unavailable"})
+		return
+	}
+
+	var req createRolloutRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+
+	created, targets, err := h.rollouts.CreateRollout(r.Context(), rollout.CreateRolloutInput{
+		TenantID:               req.TenantID,
+		Key:                    req.Key,
+		Environment:            domain.Environment(req.Environment),
+		CandidateVersionNumber: req.CandidateVersion,
+		TargetServices:         req.TargetServices,
+		Stages:                 stagesFromRequest(req.Stages),
+		RequiredAckPercentage:  req.RequiredAckPercentage,
+		DeploymentTimeout:      durationSeconds(req.DeploymentTimeoutSeconds),
+	})
+	if err != nil {
+		writeRolloutError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, rolloutResponseFromDomain(created, targets, rollout.AcknowledgementCoverage(targets)))
+}
+
+func (h Handler) getRollout(w http.ResponseWriter, r *http.Request) {
+	if h.rollouts == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "unavailable", Message: "rollout service is unavailable"})
+		return
+	}
+
+	got, targets, coverage, err := h.rollouts.GetRollout(r.Context(), r.PathValue("rolloutID"))
+	if err != nil {
+		writeRolloutError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rolloutResponseFromDomain(got, targets, coverage))
 }
 
 func decodeRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -314,6 +390,19 @@ func writeAgentError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusForbidden, errorResponse{Error: "forbidden", Message: err.Error()})
 	case errors.Is(err, agentregistry.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errorResponse{Error: "not_found", Message: err.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal_error", Message: "request failed"})
+	}
+}
+
+func writeRolloutError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, rollout.ErrInvalidInput):
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid_input", Message: err.Error()})
+	case errors.Is(err, rollout.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: "not_found", Message: err.Error()})
+	case errors.Is(err, rollout.ErrAlreadyExists), errors.Is(err, rollout.ErrConflict):
+		writeJSON(w, http.StatusConflict, errorResponse{Error: "conflict", Message: err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal_error", Message: "request failed"})
 	}
@@ -363,6 +452,25 @@ type acknowledgementRequest struct {
 	ConfigDefinitionID string `json:"config_definition_id"`
 	VersionID          string `json:"version_id"`
 	SnapshotRevision   int64  `json:"snapshot_revision"`
+	RolloutID          string `json:"rollout_id"`
+	StageID            string `json:"stage_id"`
+}
+
+type createRolloutRequest struct {
+	TenantID                 string               `json:"tenant_id"`
+	Key                      string               `json:"key"`
+	Environment              string               `json:"environment"`
+	CandidateVersion         int                  `json:"candidate_version"`
+	TargetServices           []string             `json:"target_services"`
+	Stages                   []createRolloutStage `json:"stages"`
+	RequiredAckPercentage    float64              `json:"required_ack_percentage"`
+	DeploymentTimeoutSeconds int                  `json:"deployment_timeout_seconds"`
+}
+
+type createRolloutStage struct {
+	ID                     string `json:"id"`
+	Percentage             int    `json:"percentage"`
+	MinimumDurationSeconds int    `json:"minimum_duration_seconds"`
 }
 
 type tenantResponse struct {
@@ -421,13 +529,41 @@ type agentResponse struct {
 }
 
 type acknowledgementResponse struct {
-	ID                 string `json:"id"`
-	AgentID            string `json:"agent_id"`
-	ConfigDefinitionID string `json:"config_definition_id"`
-	VersionID          string `json:"version_id"`
-	SnapshotRevision   int64  `json:"snapshot_revision"`
-	Counted            bool   `json:"counted"`
-	CreatedAt          string `json:"created_at"`
+	ID                 string              `json:"id"`
+	AgentID            string              `json:"agent_id"`
+	ConfigDefinitionID string              `json:"config_definition_id"`
+	VersionID          string              `json:"version_id"`
+	SnapshotRevision   int64               `json:"snapshot_revision"`
+	Counted            bool                `json:"counted"`
+	CreatedAt          string              `json:"created_at"`
+	Rollout            *rolloutAckResponse `json:"rollout,omitempty"`
+}
+
+type rolloutAckResponse struct {
+	Counted  bool             `json:"counted"`
+	Decision string           `json:"decision"`
+	Coverage coverageResponse `json:"coverage"`
+}
+
+type rolloutResponse struct {
+	ID                 string           `json:"id"`
+	ConfigDefinitionID string           `json:"config_definition_id"`
+	TenantID           string           `json:"tenant_id"`
+	Key                string           `json:"key"`
+	Environment        string           `json:"environment"`
+	StableVersionID    string           `json:"stable_version_id"`
+	CandidateVersionID string           `json:"candidate_version_id"`
+	CandidateVersion   int              `json:"candidate_version"`
+	State              string           `json:"state"`
+	CurrentStageID     string           `json:"current_stage_id"`
+	Coverage           coverageResponse `json:"coverage"`
+	Targets            int              `json:"targets"`
+}
+
+type coverageResponse struct {
+	Total      int     `json:"total"`
+	Acked      int     `json:"acked"`
+	Percentage float64 `json:"percentage"`
 }
 
 type errorResponse struct {
@@ -512,6 +648,54 @@ func acknowledgementResponseFromDomain(ack domain.AgentAcknowledgement) acknowle
 		Counted:            ack.Counted,
 		CreatedAt:          ack.CreatedAt.Format(timeFormat),
 	}
+}
+
+func rolloutResponseFromDomain(rollout rollout.Rollout, targets []rollout.StageTarget, coverage rollout.Coverage) rolloutResponse {
+	return rolloutResponse{
+		ID:                 rollout.ID,
+		ConfigDefinitionID: rollout.ConfigDefinitionID,
+		TenantID:           rollout.TenantID,
+		Key:                rollout.ConfigKey,
+		Environment:        string(rollout.Environment),
+		StableVersionID:    rollout.StableVersionID,
+		CandidateVersionID: rollout.CandidateVersionID,
+		CandidateVersion:   rollout.CandidateVersion,
+		State:              string(rollout.State),
+		CurrentStageID:     rollout.CurrentStageID,
+		Coverage:           coverageResponseFromDomain(coverage),
+		Targets:            len(targets),
+	}
+}
+
+func coverageResponseFromDomain(coverage rollout.Coverage) coverageResponse {
+	return coverageResponse{
+		Total:      coverage.Total,
+		Acked:      coverage.Acked,
+		Percentage: coverage.Percentage,
+	}
+}
+
+func stagesFromRequest(stages []createRolloutStage) []rollout.Stage {
+	if len(stages) == 0 {
+		return nil
+	}
+
+	result := make([]rollout.Stage, 0, len(stages))
+	for _, stage := range stages {
+		result = append(result, rollout.Stage{
+			ID:              stage.ID,
+			Percentage:      stage.Percentage,
+			MinimumDuration: durationSeconds(stage.MinimumDurationSeconds),
+		})
+	}
+	return result
+}
+
+func durationSeconds(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func bearerToken(header string) string {

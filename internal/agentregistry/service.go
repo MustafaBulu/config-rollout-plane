@@ -15,6 +15,7 @@ import (
 type Store interface {
 	SaveAgent(ctx context.Context, agent domain.Agent) error
 	GetAgent(ctx context.Context, agentID string) (domain.Agent, error)
+	ListAgents(ctx context.Context) ([]domain.Agent, error)
 	SaveCredential(ctx context.Context, credential domain.AgentCredential) error
 	GetCredential(ctx context.Context, token string) (domain.AgentCredential, error)
 	TouchHeartbeat(ctx context.Context, agentID string, seenAt time.Time) (domain.Agent, error)
@@ -124,6 +125,14 @@ func (s *Service) Verify(ctx context.Context, token string) (string, error) {
 		return "", ErrExpiredCredential
 	}
 	return credential.AgentID, nil
+}
+
+func (s *Service) ListAgents(ctx context.Context) ([]domain.Agent, error) {
+	return s.store.ListAgents(ctx)
+}
+
+func (s *Service) GetAgent(ctx context.Context, agentID string) (domain.Agent, error) {
+	return s.store.GetAgent(ctx, agentID)
 }
 
 func (s *Service) Heartbeat(ctx context.Context, agentID string, token string) (domain.Agent, error) {

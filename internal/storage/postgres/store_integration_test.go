@@ -83,7 +83,7 @@ func TestStoreConfigRegistryAcceptanceFlow(t *testing.T) {
 func applyMigrations(t *testing.T, ctx context.Context, store *Store) {
 	t.Helper()
 
-	for _, name := range []string{"000001_foundation.sql", "000002_config_registry.sql"} {
+	for _, name := range []string{"000001_foundation.sql", "000002_config_registry.sql", "000003_agents.sql", "000004_rollouts.sql"} {
 		path := filepath.Join("..", "..", "..", "migrations", name)
 		sql, err := os.ReadFile(path)
 		if err != nil {

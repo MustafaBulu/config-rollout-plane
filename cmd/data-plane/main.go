@@ -6,12 +6,17 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"config-rollout-plane/internal/agentregistry"
+	"config-rollout-plane/internal/configregistry"
 	"config-rollout-plane/internal/dataplane"
 	"config-rollout-plane/internal/logging"
+	"config-rollout-plane/internal/rollout"
 	"config-rollout-plane/internal/runtime"
+	postgresstore "config-rollout-plane/internal/storage/postgres"
 )
 
 func main() {
@@ -30,17 +35,40 @@ func main() {
 		ShutdownTimeout: runtime.EnvDuration("DATA_PLANE_SHUTDOWN_TIMEOUT", 10*time.Second),
 	}
 
-	snapshotStore := dataplane.NewMemorySnapshotStore()
-	seedSnapshot(snapshotStore, logger)
+	snapshotStore, verifier, cleanup := openDataPlaneDependencies(ctx, logger)
+	defer cleanup()
 
-	handler := dataplane.NewHandler(
-		snapshotStore,
-		dataplane.NewStaticCredentialVerifier(agentTokens()),
-	)
+	handler := dataplane.NewHandler(snapshotStore, verifier)
 	if err := runtime.RunHTTPServer(ctx, cfg, handler, logger); err != nil {
 		logger.Error("service stopped with error", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+func openDataPlaneDependencies(ctx context.Context, logger *slog.Logger) (dataplane.SnapshotStore, dataplane.CredentialVerifier, func()) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		snapshotStore := dataplane.NewMemorySnapshotStore()
+		seedSnapshot(snapshotStore, logger)
+		return snapshotStore, dataplane.NewStaticCredentialVerifier(agentTokens()), func() {}
+	}
+
+	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	store, err := postgresstore.NewStore(connectCtx, databaseURL)
+	if err != nil {
+		logger.Error("postgres connection failed", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	registry := configregistry.NewService(store, configregistry.JSONSchemaValidator{})
+	agents := agentregistry.NewService(store, "", runtime.EnvDuration("AGENT_CREDENTIAL_TTL", 15*time.Minute))
+	rollouts := rollout.NewService(store, registry, agents)
+	snapshotStore := dataplane.NewDynamicSnapshotStore(registry, agents, rollouts, tenantFilter())
+
+	logger.Info("using postgres dynamic snapshot store")
+	return snapshotStore, dataplane.NewAgentCredentialVerifier(agents), store.Close
 }
 
 func agentTokens() map[string]string {
@@ -50,6 +78,26 @@ func agentTokens() map[string]string {
 		return nil
 	}
 	return map[string]string{token: agentID}
+}
+
+func tenantFilter() []string {
+	raw := os.Getenv("DATA_PLANE_TENANTS")
+	if raw == "" {
+		raw = os.Getenv("DATA_PLANE_TENANT_ID")
+	}
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.Split(raw, ",")
+	tenants := make([]string, 0, len(parts))
+	for _, part := range parts {
+		tenant := strings.TrimSpace(part)
+		if tenant != "" {
+			tenants = append(tenants, tenant)
+		}
+	}
+	return tenants
 }
 
 func seedSnapshot(store *dataplane.MemorySnapshotStore, logger *slog.Logger) {

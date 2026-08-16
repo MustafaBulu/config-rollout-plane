@@ -3,6 +3,7 @@ package agentregistry
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -52,6 +53,31 @@ func (s *MemoryStore) GetAgent(ctx context.Context, agentID string) (domain.Agen
 	}
 	agent.Labels = cloneLabels(agent.Labels)
 	return agent, nil
+}
+
+func (s *MemoryStore) ListAgents(ctx context.Context) ([]domain.Agent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	agents := make([]domain.Agent, 0, len(s.agents))
+	for _, agent := range s.agents {
+		agent.Labels = cloneLabels(agent.Labels)
+		agents = append(agents, agent)
+	}
+	slices.SortFunc(agents, func(a, b domain.Agent) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+	return agents, nil
 }
 
 func (s *MemoryStore) SaveCredential(ctx context.Context, credential domain.AgentCredential) error {

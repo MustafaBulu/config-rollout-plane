@@ -3,6 +3,8 @@ package dataplane
 import (
 	"context"
 	"errors"
+
+	"config-rollout-plane/internal/agentregistry"
 )
 
 var (
@@ -14,6 +16,32 @@ var (
 
 type CredentialVerifier interface {
 	Verify(ctx context.Context, token string) (agentID string, err error)
+}
+
+type AgentCredentialVerifier struct {
+	agents interface {
+		Verify(ctx context.Context, token string) (string, error)
+	}
+}
+
+func NewAgentCredentialVerifier(agents interface {
+	Verify(ctx context.Context, token string) (string, error)
+}) AgentCredentialVerifier {
+	return AgentCredentialVerifier{agents: agents}
+}
+
+func (v AgentCredentialVerifier) Verify(ctx context.Context, token string) (string, error) {
+	agentID, err := v.agents.Verify(ctx, token)
+	if err == nil {
+		return agentID, nil
+	}
+	if errors.Is(err, agentregistry.ErrUnauthorized) {
+		return "", ErrInvalidCredential
+	}
+	if errors.Is(err, agentregistry.ErrExpiredCredential) {
+		return "", ErrInvalidCredential
+	}
+	return "", err
 }
 
 type StaticCredentialVerifier struct {

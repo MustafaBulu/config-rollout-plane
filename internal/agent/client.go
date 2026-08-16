@@ -83,6 +83,10 @@ func (a ControlPlaneAcknowledger) Acknowledge(ctx context.Context, agentID strin
 		"version_id":           item.VersionID,
 		"snapshot_revision":    revision,
 	}
+	if item.Assignment.RolloutID != "" && item.Assignment.StageID != "" {
+		payload["rollout_id"] = item.Assignment.RolloutID
+		payload["stage_id"] = item.Assignment.StageID
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
