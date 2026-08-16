@@ -12,7 +12,9 @@ configuration delivery: services should be able to receive runtime config update
 acknowledge the exact version they received, and continue operating from a local cache during backend
 outages.
 
-Progressive rollout stages, health guardrails, and automatic rollback are planned next.
+Percentage rollout stages, deterministic agent assignment, frozen target cohorts, acknowledgement
+coverage, and deployment-timeout rollback are implemented. Prometheus health guardrails and automatic
+health-based rollback are planned next.
 
 ## Architecture
 
@@ -69,7 +71,14 @@ use the in-memory store behind the same Go interface.
 - Instance credentials bound to one agent identity
 - Agent heartbeat endpoint
 - Agent acknowledgement endpoint
+- Percentage rollout creation and inspection endpoints
+- Default 5/25/100 rollout stages
+- Deterministic rollout bucketing
+- Frozen rollout target cohorts
+- Acknowledgement coverage based promotion
+- Deployment-timeout rollback
 - Data-plane snapshot endpoint
+- Rollout-aware data-plane snapshots when PostgreSQL is configured
 - ETag and `If-None-Match` support
 - Credential/path mismatch protection with `403 Forbidden`
 - Agent snapshot polling client
@@ -240,6 +249,8 @@ Control plane:
 - `POST /v1/agents/register`
 - `POST /v1/agents/{agentID}/heartbeat`
 - `POST /v1/agents/{agentID}/acknowledgements`
+- `POST /v1/rollouts`
+- `GET /v1/rollouts/{rolloutID}`
 
 Data plane:
 
@@ -266,6 +277,9 @@ Control plane:
 Data plane:
 
 - `DATA_PLANE_ADDR` default: `:8081`
+- `DATABASE_URL`
+- `DATA_PLANE_TENANTS` optional comma-separated tenant filter for dynamic snapshots
+- `DATA_PLANE_TENANT_ID` optional single-tenant filter for dynamic snapshots
 - `DATA_PLANE_AGENT_ID`
 - `DATA_PLANE_AGENT_TOKEN`
 - `DATA_PLANE_CONFIG_KEY`
@@ -318,10 +332,7 @@ go test ./internal/storage/postgres
 
 ## Planned Work
 
-- Percentage-based rollout stages
-- Deterministic agent assignment
-- Frozen rollout target cohorts
 - Prometheus guardrail evaluation
-- Automatic rollback
+- Automatic health-based rollback
 - Multi-replica control plane behavior
 - Kubernetes deployment examples

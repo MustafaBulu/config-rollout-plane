@@ -191,6 +191,34 @@ paths:
           description: Acknowledgement recorded
         "403":
           description: Credential subject does not match agent path
+  /v1/rollouts:
+    post:
+      summary: Start a percentage rollout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRolloutRequest"
+      responses:
+        "201":
+          description: Rollout created
+        "409":
+          description: Active rollout already exists for the config and environment
+  /v1/rollouts/{rolloutID}:
+    get:
+      summary: Get rollout state and acknowledgement coverage
+      parameters:
+        - name: rolloutID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Rollout state
+        "404":
+          description: Rollout not found
 components:
   securitySchemes:
     bearerAuth:
@@ -294,3 +322,49 @@ components:
         snapshot_revision:
           type: integer
           minimum: 1
+        rollout_id:
+          type: string
+        stage_id:
+          type: string
+    CreateRolloutRequest:
+      type: object
+      required: [tenant_id, key, environment, candidate_version]
+      properties:
+        tenant_id:
+          type: string
+        key:
+          type: string
+        environment:
+          type: string
+          enum: [development, staging, production]
+        candidate_version:
+          type: integer
+          minimum: 1
+        target_services:
+          type: array
+          items:
+            type: string
+        stages:
+          type: array
+          items:
+            $ref: "#/components/schemas/RolloutStageRequest"
+        required_ack_percentage:
+          type: number
+          minimum: 0
+          maximum: 100
+        deployment_timeout_seconds:
+          type: integer
+          minimum: 0
+    RolloutStageRequest:
+      type: object
+      required: [id, percentage]
+      properties:
+        id:
+          type: string
+        percentage:
+          type: integer
+          minimum: 1
+          maximum: 100
+        minimum_duration_seconds:
+          type: integer
+          minimum: 0
