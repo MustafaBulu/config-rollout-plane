@@ -10,6 +10,7 @@ import (
 	"config-rollout-plane/internal/agentregistry"
 	"config-rollout-plane/internal/configregistry"
 	"config-rollout-plane/internal/domain"
+	"config-rollout-plane/internal/guardrail"
 	"config-rollout-plane/internal/health"
 	"config-rollout-plane/internal/rollout"
 )
@@ -327,8 +328,11 @@ func (h Handler) createRollout(w http.ResponseWriter, r *http.Request) {
 		CandidateVersionNumber: req.CandidateVersion,
 		TargetServices:         req.TargetServices,
 		Stages:                 stagesFromRequest(req.Stages),
+		Guardrails:             guardrailsFromRequest(req.Guardrails),
 		RequiredAckPercentage:  req.RequiredAckPercentage,
 		DeploymentTimeout:      durationSeconds(req.DeploymentTimeoutSeconds),
+		RolloutMaxDuration:     durationSeconds(req.RolloutMaxDurationSeconds),
+		RollbackTimeout:        durationSeconds(req.RollbackTimeoutSeconds),
 	})
 	if err != nil {
 		writeRolloutError(w, err)
@@ -457,20 +461,31 @@ type acknowledgementRequest struct {
 }
 
 type createRolloutRequest struct {
-	TenantID                 string               `json:"tenant_id"`
-	Key                      string               `json:"key"`
-	Environment              string               `json:"environment"`
-	CandidateVersion         int                  `json:"candidate_version"`
-	TargetServices           []string             `json:"target_services"`
-	Stages                   []createRolloutStage `json:"stages"`
-	RequiredAckPercentage    float64              `json:"required_ack_percentage"`
-	DeploymentTimeoutSeconds int                  `json:"deployment_timeout_seconds"`
+	TenantID                  string               `json:"tenant_id"`
+	Key                       string               `json:"key"`
+	Environment               string               `json:"environment"`
+	CandidateVersion          int                  `json:"candidate_version"`
+	TargetServices            []string             `json:"target_services"`
+	Stages                    []createRolloutStage `json:"stages"`
+	Guardrails                []createGuardrail    `json:"guardrails"`
+	RequiredAckPercentage     float64              `json:"required_ack_percentage"`
+	DeploymentTimeoutSeconds  int                  `json:"deployment_timeout_seconds"`
+	RolloutMaxDurationSeconds int                  `json:"rollout_max_duration_seconds"`
+	RollbackTimeoutSeconds    int                  `json:"rollback_timeout_seconds"`
 }
 
 type createRolloutStage struct {
 	ID                     string `json:"id"`
 	Percentage             int    `json:"percentage"`
 	MinimumDurationSeconds int    `json:"minimum_duration_seconds"`
+}
+
+type createGuardrail struct {
+	Name                string  `json:"name"`
+	Query               string  `json:"query"`
+	Operator            string  `json:"operator"`
+	Threshold           float64 `json:"threshold"`
+	ConsecutiveFailures int     `json:"consecutive_failures"`
 }
 
 type tenantResponse struct {
@@ -556,6 +571,7 @@ type rolloutResponse struct {
 	CandidateVersion   int              `json:"candidate_version"`
 	State              string           `json:"state"`
 	CurrentStageID     string           `json:"current_stage_id"`
+	RollbackStatus     string           `json:"rollback_status,omitempty"`
 	Coverage           coverageResponse `json:"coverage"`
 	Targets            int              `json:"targets"`
 }
@@ -662,6 +678,7 @@ func rolloutResponseFromDomain(rollout rollout.Rollout, targets []rollout.StageT
 		CandidateVersion:   rollout.CandidateVersion,
 		State:              string(rollout.State),
 		CurrentStageID:     rollout.CurrentStageID,
+		RollbackStatus:     string(rollout.RollbackStatus),
 		Coverage:           coverageResponseFromDomain(coverage),
 		Targets:            len(targets),
 	}
@@ -686,6 +703,24 @@ func stagesFromRequest(stages []createRolloutStage) []rollout.Stage {
 			ID:              stage.ID,
 			Percentage:      stage.Percentage,
 			MinimumDuration: durationSeconds(stage.MinimumDurationSeconds),
+		})
+	}
+	return result
+}
+
+func guardrailsFromRequest(guardrails []createGuardrail) []guardrail.Rule {
+	if len(guardrails) == 0 {
+		return nil
+	}
+
+	result := make([]guardrail.Rule, 0, len(guardrails))
+	for _, rule := range guardrails {
+		result = append(result, guardrail.Rule{
+			Name:                rule.Name,
+			Query:               rule.Query,
+			Operator:            guardrail.Operator(rule.Operator),
+			Threshold:           rule.Threshold,
+			ConsecutiveFailures: rule.ConsecutiveFailures,
 		})
 	}
 	return result

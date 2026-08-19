@@ -2,12 +2,14 @@ package rollout
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"config-rollout-plane/internal/agentregistry"
 	"config-rollout-plane/internal/configregistry"
 	"config-rollout-plane/internal/domain"
+	"config-rollout-plane/internal/guardrail"
 )
 
 func TestServiceCreatesFrozenTargetsAndPromotesToStable(t *testing.T) {
@@ -188,6 +190,189 @@ func TestServiceReconcileRollsBackTimedOutStageWithoutAcknowledgements(t *testin
 	}
 }
 
+func TestServiceRollsBackWhenGuardrailBecomesUnhealthyAndVerifiesRollback(t *testing.T) {
+	ctx := context.Background()
+	registry, agents := setupRolloutDependencies(t, ctx, 200)
+	service := NewService(NewMemoryStore(), registry, agents)
+	service.SetGuardrailQueryer(staticQueryer{value: 0.05})
+
+	created, targets, err := service.CreateRollout(ctx, CreateRolloutInput{
+		TenantID:               "payments",
+		Key:                    "payment.authorization.timeout",
+		Environment:            domain.EnvironmentProduction,
+		CandidateVersionNumber: 2,
+		TargetServices:         []string{"payment-api"},
+		Stages: []Stage{
+			{ID: "stage-5", Percentage: 5},
+			{ID: "stage-100", Percentage: 100},
+		},
+		Guardrails: []guardrail.Rule{
+			{
+				Name:                "error-rate",
+				Query:               `sum(rate(payment_requests_total{result="error"}[1m]))`,
+				Operator:            guardrail.OperatorLessThan,
+				Threshold:           0.02,
+				ConsecutiveFailures: 1,
+			},
+		},
+		RequiredAckPercentage: 100,
+		DeploymentTimeout:     time.Minute,
+		RolloutMaxDuration:    15 * time.Minute,
+		RollbackTimeout:       time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("create rollout: %v", err)
+	}
+	if len(targets) == 0 {
+		t.Fatal("expected targets")
+	}
+
+	rolledBack := acknowledgeCurrentStage(t, ctx, service, created, targets)
+	if rolledBack.State != StateRollingBack {
+		t.Fatalf("expected rolling back state, got %s", rolledBack.State)
+	}
+
+	if err := service.ReconcileActive(ctx); err != nil {
+		t.Fatalf("activate rollback verification: %v", err)
+	}
+	verifying, verificationTargets, _, err := service.GetRollout(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get verifying rollout: %v", err)
+	}
+	if verifying.CurrentStageID != rollbackVerificationStageID(created.ID) {
+		t.Fatalf("expected rollback verification stage, got %s", verifying.CurrentStageID)
+	}
+	if len(verificationTargets) != len(targets) {
+		t.Fatalf("expected rollback verification targets to match candidate targets: %d != %d", len(verificationTargets), len(targets))
+	}
+	for _, target := range verificationTargets {
+		if target.ExpectedVersionID != verifying.StableVersionID {
+			t.Fatalf("rollback verification should expect stable version, got %q", target.ExpectedVersionID)
+		}
+	}
+
+	final := acknowledgeCurrentStage(t, ctx, service, verifying, verificationTargets)
+	if final.State != StateRolledBack {
+		t.Fatalf("expected rolled back state, got %s", final.State)
+	}
+	if final.RollbackStatus != RollbackStatusVerified {
+		t.Fatalf("expected verified rollback, got %s", final.RollbackStatus)
+	}
+
+	state, err := registry.GetEnvironmentState(ctx, "payments", "payment.authorization.timeout", domain.EnvironmentProduction)
+	if err != nil {
+		t.Fatalf("get environment state: %v", err)
+	}
+	if state.StableVersionID != final.StableVersionID {
+		t.Fatalf("rollback must keep previous stable version, got %q want %q", state.StableVersionID, final.StableVersionID)
+	}
+}
+
+func TestServicePausesOnUnknownGuardrailAndMaxDurationForcesRollback(t *testing.T) {
+	ctx := context.Background()
+	registry, agents := setupRolloutDependencies(t, ctx, 200)
+	service := NewService(NewMemoryStore(), registry, agents)
+	service.SetGuardrailQueryer(staticQueryer{err: errors.New("prometheus unavailable")})
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+
+	created, targets, err := service.CreateRollout(ctx, CreateRolloutInput{
+		TenantID:               "payments",
+		Key:                    "payment.authorization.timeout",
+		Environment:            domain.EnvironmentProduction,
+		CandidateVersionNumber: 2,
+		TargetServices:         []string{"payment-api"},
+		Stages: []Stage{
+			{ID: "stage-5", Percentage: 5},
+			{ID: "stage-100", Percentage: 100},
+		},
+		Guardrails: []guardrail.Rule{
+			{Name: "error-rate", Query: "up", Operator: guardrail.OperatorLessThan, Threshold: 0.02},
+		},
+		RequiredAckPercentage: 100,
+		DeploymentTimeout:     time.Minute,
+		RolloutMaxDuration:    2 * time.Minute,
+		RollbackTimeout:       time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("create rollout: %v", err)
+	}
+
+	paused := acknowledgeCurrentStage(t, ctx, service, created, targets)
+	if paused.State != StatePaused {
+		t.Fatalf("expected paused state for unknown guardrail, got %s", paused.State)
+	}
+	if paused.CurrentStageID != created.CurrentStageID {
+		t.Fatalf("unknown guardrail should not promote, got stage %s", paused.CurrentStageID)
+	}
+
+	now = now.Add(2*time.Minute + time.Second)
+	if err := service.ReconcileActive(ctx); err != nil {
+		t.Fatalf("reconcile max duration: %v", err)
+	}
+	got, _, _, err := service.GetRollout(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get rollout: %v", err)
+	}
+	if got.State != StateRollingBack {
+		t.Fatalf("expected rolling back after max duration, got %s", got.State)
+	}
+}
+
+func TestServiceMarksRollbackPartialWhenVerificationTimesOut(t *testing.T) {
+	ctx := context.Background()
+	registry, agents := setupRolloutDependencies(t, ctx, 200)
+	service := NewService(NewMemoryStore(), registry, agents)
+	service.SetGuardrailQueryer(staticQueryer{value: 0.05})
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+
+	created, targets, err := service.CreateRollout(ctx, CreateRolloutInput{
+		TenantID:               "payments",
+		Key:                    "payment.authorization.timeout",
+		Environment:            domain.EnvironmentProduction,
+		CandidateVersionNumber: 2,
+		TargetServices:         []string{"payment-api"},
+		Stages: []Stage{
+			{ID: "stage-5", Percentage: 5},
+			{ID: "stage-100", Percentage: 100},
+		},
+		Guardrails: []guardrail.Rule{
+			{Name: "error-rate", Query: "up", Operator: guardrail.OperatorLessThan, Threshold: 0.02},
+		},
+		RequiredAckPercentage: 100,
+		DeploymentTimeout:     time.Minute,
+		RolloutMaxDuration:    15 * time.Minute,
+		RollbackTimeout:       time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("create rollout: %v", err)
+	}
+	rolledBack := acknowledgeCurrentStage(t, ctx, service, created, targets)
+	if rolledBack.State != StateRollingBack {
+		t.Fatalf("expected rolling back state, got %s", rolledBack.State)
+	}
+
+	if err := service.ReconcileActive(ctx); err != nil {
+		t.Fatalf("activate rollback verification: %v", err)
+	}
+	now = now.Add(time.Minute + time.Second)
+	if err := service.ReconcileActive(ctx); err != nil {
+		t.Fatalf("reconcile rollback timeout: %v", err)
+	}
+
+	got, _, _, err := service.GetRollout(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get rollout: %v", err)
+	}
+	if got.State != StateRolledBack {
+		t.Fatalf("expected rolled back state, got %s", got.State)
+	}
+	if got.RollbackStatus != RollbackStatusPartial {
+		t.Fatalf("expected partial rollback, got %s", got.RollbackStatus)
+	}
+}
+
 func setupRolloutDependencies(t *testing.T, ctx context.Context, agentCount int) (*configregistry.Service, *agentregistry.Service) {
 	t.Helper()
 
@@ -268,4 +453,13 @@ func acknowledgeCurrentStage(t *testing.T, ctx context.Context, service *Service
 		current = result.Rollout
 	}
 	return current
+}
+
+type staticQueryer struct {
+	value float64
+	err   error
+}
+
+func (q staticQueryer) Query(ctx context.Context, query string, at time.Time) (float64, error) {
+	return q.value, q.err
 }

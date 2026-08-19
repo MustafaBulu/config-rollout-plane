@@ -11,6 +11,7 @@ import (
 	"config-rollout-plane/internal/agentregistry"
 	"config-rollout-plane/internal/configregistry"
 	"config-rollout-plane/internal/controlplane"
+	"config-rollout-plane/internal/guardrail"
 	"config-rollout-plane/internal/health"
 	"config-rollout-plane/internal/logging"
 	"config-rollout-plane/internal/rollout"
@@ -43,12 +44,31 @@ func main() {
 		runtime.EnvDuration("AGENT_CREDENTIAL_TTL", 15*time.Minute),
 	)
 	rollouts := rollout.NewService(stores.rollouts, registry, agents)
+	configureGuardrails(rollouts, logger)
 	startRolloutReconciler(ctx, rollouts, logger)
 	handler := controlplane.NewHandlerWithServices(registry, agents, rollouts, stores.readiness)
 	if err := runtime.RunHTTPServer(ctx, cfg, handler, logger); err != nil {
 		logger.Error("service stopped with error", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+func configureGuardrails(rollouts *rollout.Service, logger *slog.Logger) {
+	prometheusURL := os.Getenv("PROMETHEUS_URL")
+	if prometheusURL == "" {
+		return
+	}
+
+	client, err := guardrail.NewPrometheusClient(
+		prometheusURL,
+		runtime.EnvDuration("PROMETHEUS_QUERY_TIMEOUT", 2*time.Second),
+	)
+	if err != nil {
+		logger.Error("prometheus guardrail client disabled", slog.Any("error", err))
+		return
+	}
+	rollouts.SetGuardrailQueryer(client)
+	logger.Info("prometheus guardrail client enabled", slog.String("url", prometheusURL))
 }
 
 type stores struct {

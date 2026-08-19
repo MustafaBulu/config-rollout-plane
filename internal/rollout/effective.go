@@ -10,6 +10,10 @@ type EffectiveVersion struct {
 func EffectiveVersionForAgent(rollout Rollout, targets []StageTarget, agentID string) EffectiveVersion {
 	stable := EffectiveVersion{VersionID: rollout.StableVersionID}
 
+	if rollout.State == StateRollingBack {
+		return rollbackVerificationVersionForAgent(rollout, targets, agentID)
+	}
+
 	if !servesCandidate(rollout.State) {
 		return stable
 	}
@@ -29,6 +33,28 @@ func EffectiveVersionForAgent(rollout Rollout, targets []StageTarget, agentID st
 		}
 	}
 
+	return stable
+}
+
+func rollbackVerificationVersionForAgent(rollout Rollout, targets []StageTarget, agentID string) EffectiveVersion {
+	stable := EffectiveVersion{VersionID: rollout.StableVersionID}
+	for _, target := range targets {
+		if target.AgentID != agentID {
+			continue
+		}
+		if target.RolloutID != rollout.ID || target.StageID != rollout.CurrentStageID {
+			continue
+		}
+		if target.ExpectedVersionID != rollout.StableVersionID {
+			return stable
+		}
+		return EffectiveVersion{
+			VersionID:        rollout.StableVersionID,
+			AssignedRollout:  target.RolloutID,
+			AssignedStage:    target.StageID,
+			SnapshotRevision: target.SnapshotRevision,
+		}
+	}
 	return stable
 }
 

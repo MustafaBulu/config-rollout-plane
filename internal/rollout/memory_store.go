@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"config-rollout-plane/internal/guardrail"
 )
 
 type MemoryStore struct {
@@ -45,7 +47,7 @@ func (s *MemoryStore) CreateRollout(ctx context.Context, rollout Rollout, stages
 		}
 	}
 
-	s.rollouts[rollout.ID] = rollout
+	s.rollouts[rollout.ID] = cloneRollout(rollout)
 	s.stages[rollout.ID] = append([]Stage(nil), stages...)
 	if !rollout.State.Terminal() {
 		s.activeRollout[activeKey] = rollout.ID
@@ -65,7 +67,7 @@ func (s *MemoryStore) GetRollout(ctx context.Context, rolloutID string) (Rollout
 	if !ok {
 		return Rollout{}, fmt.Errorf("%w: rollout %q", ErrNotFound, rolloutID)
 	}
-	return rollout, nil
+	return cloneRollout(rollout), nil
 }
 
 func (s *MemoryStore) GetActiveRollout(ctx context.Context, configDefinitionID string, environment string) (Rollout, error) {
@@ -84,7 +86,7 @@ func (s *MemoryStore) GetActiveRollout(ctx context.Context, configDefinitionID s
 	if rollout.State.Terminal() {
 		return Rollout{}, fmt.Errorf("%w: active rollout", ErrNotFound)
 	}
-	return rollout, nil
+	return cloneRollout(rollout), nil
 }
 
 func (s *MemoryStore) ListActiveRollouts(ctx context.Context) ([]Rollout, error) {
@@ -101,7 +103,7 @@ func (s *MemoryStore) ListActiveRollouts(ctx context.Context) ([]Rollout, error)
 		if rollout.State.Terminal() {
 			continue
 		}
-		rollouts = append(rollouts, rollout)
+		rollouts = append(rollouts, cloneRollout(rollout))
 	}
 	return rollouts, nil
 }
@@ -118,7 +120,7 @@ func (s *MemoryStore) UpdateRollout(ctx context.Context, rollout Rollout) error 
 		return fmt.Errorf("%w: rollout %q", ErrNotFound, rollout.ID)
 	}
 
-	s.rollouts[rollout.ID] = rollout
+	s.rollouts[rollout.ID] = cloneRollout(rollout)
 	activeKey := rolloutActiveKey(rollout.ConfigDefinitionID, string(rollout.Environment))
 	if rollout.State.Terminal() {
 		delete(s.activeRollout, activeKey)
@@ -141,6 +143,26 @@ func (s *MemoryStore) ListStages(ctx context.Context, rolloutID string) ([]Stage
 		return nil, fmt.Errorf("%w: stages for rollout %q", ErrNotFound, rolloutID)
 	}
 	return append([]Stage(nil), stages...), nil
+}
+
+func (s *MemoryStore) SaveStage(ctx context.Context, rolloutID string, stage Stage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.rollouts[rolloutID]; !ok {
+		return fmt.Errorf("%w: rollout %q", ErrNotFound, rolloutID)
+	}
+	for _, existing := range s.stages[rolloutID] {
+		if existing.ID == stage.ID {
+			return nil
+		}
+	}
+	s.stages[rolloutID] = append(s.stages[rolloutID], stage)
+	return nil
 }
 
 func (s *MemoryStore) SaveStageTargets(ctx context.Context, targets []StageTarget) error {
@@ -201,4 +223,17 @@ func rolloutActiveKey(configDefinitionID string, environment string) string {
 
 func targetKey(rolloutID string, stageID string) string {
 	return rolloutID + "\x00" + stageID
+}
+
+func cloneRollout(rollout Rollout) Rollout {
+	rollout.TargetServices = append([]string(nil), rollout.TargetServices...)
+	rollout.Guardrails = append([]guardrail.Rule(nil), rollout.Guardrails...)
+	if rollout.GuardrailFailures != nil {
+		failures := make(map[string]int, len(rollout.GuardrailFailures))
+		for name, count := range rollout.GuardrailFailures {
+			failures[name] = count
+		}
+		rollout.GuardrailFailures = failures
+	}
+	return rollout
 }

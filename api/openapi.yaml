@@ -348,11 +348,21 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RolloutStageRequest"
+        guardrails:
+          type: array
+          items:
+            $ref: "#/components/schemas/GuardrailRequest"
         required_ack_percentage:
           type: number
           minimum: 0
           maximum: 100
         deployment_timeout_seconds:
+          type: integer
+          minimum: 0
+        rollout_max_duration_seconds:
+          type: integer
+          minimum: 0
+        rollback_timeout_seconds:
           type: integer
           minimum: 0
     RolloutStageRequest:
@@ -366,5 +376,21 @@ components:
           minimum: 1
           maximum: 100
         minimum_duration_seconds:
+          type: integer
+          minimum: 0
+    GuardrailRequest:
+      type: object
+      required: [name, query, operator, threshold]
+      properties:
+        name:
+          type: string
+        query:
+          type: string
+        operator:
+          type: string
+          enum: ["<", "<=", ">", ">=", "==", "!="]
+        threshold:
+          type: number
+        consecutive_failures:
           type: integer
           minimum: 0

@@ -7,6 +7,7 @@ type StageDecision string
 const (
 	DecisionWait     StageDecision = "WAIT"
 	DecisionPromote  StageDecision = "PROMOTE"
+	DecisionPause    StageDecision = "PAUSE"
 	DecisionRollback StageDecision = "ROLLBACK"
 )
 

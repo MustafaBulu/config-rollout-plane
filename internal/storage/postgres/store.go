@@ -350,13 +350,18 @@ func (s *Store) CreateRollout(ctx context.Context, rollout rolloutpkg.Rollout, s
 			current_stage_id,
 			current_stage_index,
 			required_ack_percentage,
+			guardrails,
+			guardrail_failures,
 			stage_started_at,
 			deployment_timeout_seconds,
+			rollout_max_duration_seconds,
+			rollback_timeout_seconds,
+			rollback_status,
 			created_at,
 			updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-	`, rollout.ID, rollout.TenantID, rollout.ConfigDefinitionID, rollout.ConfigKey, string(rollout.Environment), targetServices, rollout.StableVersionID, rollout.CandidateVersionID, rollout.CandidateVersion, string(rollout.State), rollout.CurrentStageID, rollout.CurrentStageIndex, rollout.RequiredAckPercent, rollout.StageStartedAt, durationSeconds(rollout.DeploymentTimeout), rollout.CreatedAt, rollout.UpdatedAt)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+	`, rollout.ID, rollout.TenantID, rollout.ConfigDefinitionID, rollout.ConfigKey, string(rollout.Environment), targetServices, rollout.StableVersionID, rollout.CandidateVersionID, rollout.CandidateVersion, string(rollout.State), rollout.CurrentStageID, rollout.CurrentStageIndex, rollout.RequiredAckPercent, jsonValue(rollout.Guardrails, []byte("[]")), jsonValue(rollout.GuardrailFailures, []byte("{}")), rollout.StageStartedAt, durationSeconds(rollout.DeploymentTimeout), durationSeconds(rollout.RolloutMaxDuration), durationSeconds(rollout.RollbackTimeout), string(rollout.RollbackStatus), rollout.CreatedAt, rollout.UpdatedAt)
 	if err != nil {
 		return mapRolloutError(err)
 	}
@@ -442,11 +447,16 @@ func (s *Store) UpdateRollout(ctx context.Context, rollout rolloutpkg.Rollout) e
 			current_stage_id = $11,
 			current_stage_index = $12,
 			required_ack_percentage = $13,
-			stage_started_at = $14,
-			deployment_timeout_seconds = $15,
-			updated_at = $16
+			guardrails = $14,
+			guardrail_failures = $15,
+			stage_started_at = $16,
+			deployment_timeout_seconds = $17,
+			rollout_max_duration_seconds = $18,
+			rollback_timeout_seconds = $19,
+			rollback_status = $20,
+			updated_at = $21
 		WHERE id = $1
-	`, rollout.ID, rollout.TenantID, rollout.ConfigDefinitionID, rollout.ConfigKey, string(rollout.Environment), targetServices, rollout.StableVersionID, rollout.CandidateVersionID, rollout.CandidateVersion, string(rollout.State), rollout.CurrentStageID, rollout.CurrentStageIndex, rollout.RequiredAckPercent, rollout.StageStartedAt, durationSeconds(rollout.DeploymentTimeout), rollout.UpdatedAt)
+	`, rollout.ID, rollout.TenantID, rollout.ConfigDefinitionID, rollout.ConfigKey, string(rollout.Environment), targetServices, rollout.StableVersionID, rollout.CandidateVersionID, rollout.CandidateVersion, string(rollout.State), rollout.CurrentStageID, rollout.CurrentStageIndex, rollout.RequiredAckPercent, jsonValue(rollout.Guardrails, []byte("[]")), jsonValue(rollout.GuardrailFailures, []byte("{}")), rollout.StageStartedAt, durationSeconds(rollout.DeploymentTimeout), durationSeconds(rollout.RolloutMaxDuration), durationSeconds(rollout.RollbackTimeout), string(rollout.RollbackStatus), rollout.UpdatedAt)
 	if err != nil {
 		return mapRolloutError(err)
 	}
@@ -477,6 +487,24 @@ func (s *Store) ListStages(ctx context.Context, rolloutID string) ([]rolloutpkg.
 		stages = append(stages, stage)
 	}
 	return stages, mapRolloutError(rows.Err())
+}
+
+func (s *Store) SaveStage(ctx context.Context, rolloutID string, stage rolloutpkg.Stage) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO rollout_stages (
+			id, rollout_id, stage_order, percentage, minimum_duration_seconds
+		)
+		VALUES (
+			$1,
+			$2,
+			COALESCE((SELECT MAX(stage_order) + 1 FROM rollout_stages WHERE rollout_id = $2), 1),
+			$3,
+			$4
+		)
+		ON CONFLICT (id)
+		DO NOTHING
+	`, stage.ID, rolloutID, stage.Percentage, durationSeconds(stage.MinimumDuration))
+	return mapRolloutError(err)
 }
 
 func (s *Store) SaveStageTargets(ctx context.Context, targets []rolloutpkg.StageTarget) error {
@@ -573,8 +601,13 @@ func rolloutSelectSQL() string {
 			current_stage_id,
 			current_stage_index,
 			required_ack_percentage,
+			guardrails,
+			guardrail_failures,
 			stage_started_at,
 			deployment_timeout_seconds,
+			rollout_max_duration_seconds,
+			rollback_timeout_seconds,
+			rollback_status,
 			created_at,
 			updated_at
 		FROM rollouts
@@ -697,7 +730,12 @@ func scanRollout(row rowScanner) (rolloutpkg.Rollout, error) {
 	var environment string
 	var state string
 	var targetServices []byte
+	var guardrails []byte
+	var guardrailFailures []byte
 	var deploymentTimeoutSeconds int
+	var rolloutMaxDurationSeconds int
+	var rollbackTimeoutSeconds int
+	var rollbackStatus string
 	err := row.Scan(
 		&rollout.ID,
 		&rollout.TenantID,
@@ -712,8 +750,13 @@ func scanRollout(row rowScanner) (rolloutpkg.Rollout, error) {
 		&rollout.CurrentStageID,
 		&rollout.CurrentStageIndex,
 		&rollout.RequiredAckPercent,
+		&guardrails,
+		&guardrailFailures,
 		&rollout.StageStartedAt,
 		&deploymentTimeoutSeconds,
+		&rolloutMaxDurationSeconds,
+		&rollbackTimeoutSeconds,
+		&rollbackStatus,
 		&rollout.CreatedAt,
 		&rollout.UpdatedAt,
 	)
@@ -725,9 +768,22 @@ func scanRollout(row rowScanner) (rolloutpkg.Rollout, error) {
 			return rolloutpkg.Rollout{}, err
 		}
 	}
+	if len(guardrails) > 0 {
+		if err := json.Unmarshal(guardrails, &rollout.Guardrails); err != nil {
+			return rolloutpkg.Rollout{}, err
+		}
+	}
+	if len(guardrailFailures) > 0 {
+		if err := json.Unmarshal(guardrailFailures, &rollout.GuardrailFailures); err != nil {
+			return rolloutpkg.Rollout{}, err
+		}
+	}
 	rollout.Environment = domain.Environment(environment)
 	rollout.State = rolloutpkg.State(state)
 	rollout.DeploymentTimeout = time.Duration(deploymentTimeoutSeconds) * time.Second
+	rollout.RolloutMaxDuration = time.Duration(rolloutMaxDurationSeconds) * time.Second
+	rollout.RollbackTimeout = time.Duration(rollbackTimeoutSeconds) * time.Second
+	rollout.RollbackStatus = rolloutpkg.RollbackStatus(rollbackStatus)
 	return rollout, nil
 }
 
@@ -786,6 +842,17 @@ func nullableTime(value time.Time) any {
 		return nil
 	}
 	return value
+}
+
+func jsonValue(value any, fallback []byte) any {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fallback
+	}
+	if string(encoded) == "null" {
+		return fallback
+	}
+	return encoded
 }
 
 func durationSeconds(value time.Duration) int {

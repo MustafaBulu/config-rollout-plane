@@ -11,6 +11,7 @@ func TestAllowedTransitions(t *testing.T) {
 		{StateValidating, StateReady},
 		{StateReady, StateDeploying},
 		{StateDeploying, StateEvaluating},
+		{StateDeploying, StatePaused},
 		{StateDeploying, StateRollingBack},
 		{StateEvaluating, StatePromoting},
 		{StateEvaluating, StatePaused},

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"config-rollout-plane/internal/domain"
+	"config-rollout-plane/internal/guardrail"
 )
 
 type TargetStatus string
@@ -29,11 +30,24 @@ type Rollout struct {
 	CurrentStageID     string
 	CurrentStageIndex  int
 	RequiredAckPercent float64
+	Guardrails         []guardrail.Rule
+	GuardrailFailures  map[string]int
 	StageStartedAt     time.Time
 	DeploymentTimeout  time.Duration
+	RolloutMaxDuration time.Duration
+	RollbackTimeout    time.Duration
+	RollbackStatus     RollbackStatus
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
+
+type RollbackStatus string
+
+const (
+	RollbackStatusNone     RollbackStatus = ""
+	RollbackStatusVerified RollbackStatus = "VERIFIED"
+	RollbackStatusPartial  RollbackStatus = "PARTIAL"
+)
 
 type StageTarget struct {
 	RolloutID         string

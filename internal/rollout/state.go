@@ -30,6 +30,7 @@ var allowedTransitions = map[State]map[State]struct{}{
 	},
 	StateDeploying: {
 		StateEvaluating:  {},
+		StatePaused:      {},
 		StateRollingBack: {},
 	},
 	StateEvaluating: {

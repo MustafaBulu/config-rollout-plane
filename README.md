@@ -13,8 +13,8 @@ acknowledge the exact version they received, and continue operating from a local
 outages.
 
 Percentage rollout stages, deterministic agent assignment, frozen target cohorts, acknowledgement
-coverage, and deployment-timeout rollback are implemented. Prometheus health guardrails and automatic
-health-based rollback are planned next.
+coverage, deployment-timeout rollback, Prometheus health guardrails, automatic health-based rollback,
+and rollback verification are implemented.
 
 ## Architecture
 
@@ -77,6 +77,9 @@ use the in-memory store behind the same Go interface.
 - Frozen rollout target cohorts
 - Acknowledgement coverage based promotion
 - Deployment-timeout rollback
+- Prometheus guardrail evaluation
+- Automatic health-based rollback
+- Rollback verification with VERIFIED/PARTIAL outcomes
 - Data-plane snapshot endpoint
 - Rollout-aware data-plane snapshots when PostgreSQL is configured
 - ETag and `If-None-Match` support
@@ -273,6 +276,9 @@ Control plane:
 - `DATABASE_URL`
 - `AGENT_BOOTSTRAP_TOKEN` default: `dev-bootstrap-token`
 - `AGENT_CREDENTIAL_TTL` default: `15m`
+- `PROMETHEUS_URL` optional Prometheus base URL for rollout guardrails
+- `PROMETHEUS_QUERY_TIMEOUT` default: `2s`
+- `ROLLOUT_RECONCILE_INTERVAL` default: `2s`
 
 Data plane:
 
@@ -332,7 +338,5 @@ go test ./internal/storage/postgres
 
 ## Planned Work
 
-- Prometheus guardrail evaluation
-- Automatic health-based rollback
 - Multi-replica control plane behavior
 - Kubernetes deployment examples

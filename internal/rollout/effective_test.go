@@ -104,3 +104,34 @@ func TestEffectiveVersionStopsServingCandidateDuringRollback(t *testing.T) {
 		t.Fatalf("expected stable version during rollback, got %q", got.VersionID)
 	}
 }
+
+func TestEffectiveVersionAssignsStableForRollbackVerificationTarget(t *testing.T) {
+	stageID := rollbackVerificationStageID("rollout-1")
+	r := Rollout{
+		ID:                 "rollout-1",
+		StableVersionID:    "ver-1",
+		CandidateVersionID: "ver-2",
+		State:              StateRollingBack,
+		CurrentStageID:     stageID,
+	}
+	targets := []StageTarget{
+		{
+			RolloutID:         "rollout-1",
+			StageID:           stageID,
+			AgentID:           "agent-1",
+			ExpectedVersionID: "ver-1",
+			SnapshotRevision:  4,
+		},
+	}
+
+	got := EffectiveVersionForAgent(r, targets, "agent-1")
+	if got.VersionID != "ver-1" {
+		t.Fatalf("expected stable version during rollback verification, got %q", got.VersionID)
+	}
+	if got.AssignedRollout != "rollout-1" || got.AssignedStage != stageID {
+		t.Fatalf("expected rollback verification assignment, got %+v", got)
+	}
+	if got.SnapshotRevision != 4 {
+		t.Fatalf("expected rollback verification revision, got %d", got.SnapshotRevision)
+	}
+}
