@@ -45,3 +45,38 @@ func TestControlPlaneAcknowledgerSendsRolloutAssignment(t *testing.T) {
 		t.Fatalf("expected snapshot_revision 7, got %+v", payload)
 	}
 }
+
+func TestRegistrationClientRegistersAgent(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/agents/register" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent":{"id":"agent-1"},"instance_credential":"cred-1"}`))
+	}))
+	defer server.Close()
+
+	client := RegistrationClient{BaseURL: server.URL, HTTPClient: server.Client()}
+	result, err := client.Register(t.Context(), RegisterInput{
+		BootstrapToken: "bootstrap",
+		ID:             "agent-1",
+		Service:        "payment-service",
+		Environment:    "production",
+		Instance:       "pod-1",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if result.AgentID != "agent-1" || result.InstanceCredential != "cred-1" {
+		t.Fatalf("unexpected result %+v", result)
+	}
+	if payload["bootstrap_token"] != "bootstrap" || payload["service"] != "payment-service" {
+		t.Fatalf("unexpected payload %+v", payload)
+	}
+}

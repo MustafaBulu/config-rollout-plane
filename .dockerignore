@@ -1,0 +1,7 @@
+.git
+.idea
+**/target
+**/*.log
+coverage.out
+bin
+dist

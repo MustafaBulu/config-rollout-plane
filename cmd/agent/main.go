@@ -35,15 +35,33 @@ func main() {
 	}
 
 	dataPlaneURL := os.Getenv("DATA_PLANE_URL")
-	agentID := os.Getenv("AGENT_ID")
+	agentID := runtime.EnvString("AGENT_ID", hostname())
 	instanceCredential := os.Getenv("AGENT_INSTANCE_CREDENTIAL")
+	controlPlaneURL := os.Getenv("CONTROL_PLANE_URL")
+	if instanceCredential == "" && controlPlaneURL != "" {
+		result, err := registerAgent(ctx, controlPlaneURL, agentID)
+		if err != nil {
+			logger.Warn("agent registration failed", slog.Any("error", err))
+		} else {
+			agentID = result.AgentID
+			instanceCredential = result.InstanceCredential
+			logger.Info("agent registered", slog.String("agent_id", agentID))
+		}
+	}
 	if dataPlaneURL != "" && agentID != "" && instanceCredential != "" {
+		var acknowledger agent.Acknowledger
+		if controlPlaneURL != "" {
+			acknowledger = agent.ControlPlaneAcknowledger{
+				BaseURL: controlPlaneURL,
+			}
+		}
 		syncer := &agent.Syncer{
 			Client: agent.SnapshotClient{
 				BaseURL: dataPlaneURL,
 				AgentID: agentID,
 				Token:   instanceCredential,
 			},
+			Acknowledger: acknowledger,
 			Cache:        cache,
 			PollInterval: runtime.EnvDuration("AGENT_POLL_INTERVAL", 2*time.Second),
 		}
@@ -61,4 +79,23 @@ func main() {
 		logger.Error("service stopped with error", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+func registerAgent(ctx context.Context, controlPlaneURL string, agentID string) (agent.RegisterResult, error) {
+	return agent.RegistrationClient{BaseURL: controlPlaneURL}.Register(ctx, agent.RegisterInput{
+		BootstrapToken: os.Getenv("AGENT_BOOTSTRAP_TOKEN"),
+		ID:             agentID,
+		Service:        runtime.EnvString("AGENT_SERVICE", runtime.EnvString("SERVICE_NAME", "payment-service")),
+		Environment:    runtime.EnvString("AGENT_ENVIRONMENT", runtime.EnvString("ENVIRONMENT", "production")),
+		Zone:           os.Getenv("AGENT_ZONE"),
+		Instance:       runtime.EnvString("AGENT_INSTANCE", agentID),
+	})
+}
+
+func hostname() string {
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		return "agent-local"
+	}
+	return name
 }

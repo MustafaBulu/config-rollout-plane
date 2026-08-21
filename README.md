@@ -80,6 +80,11 @@ use the in-memory store behind the same Go interface.
 - Prometheus guardrail evaluation
 - Automatic health-based rollback
 - Rollback verification with VERIFIED/PARTIAL outcomes
+- Spring Boot payment demo service
+- Demo service Prometheus metrics
+- Docker build files for local images
+- kind Kubernetes manifests for platform and demo workloads
+- Agent sidecar auto-registration for Kubernetes demos
 - Data-plane snapshot endpoint
 - Rollout-aware data-plane snapshots when PostgreSQL is configured
 - ETag and `If-None-Match` support
@@ -266,6 +271,12 @@ Local agent:
 - `GET /v1/snapshot`
 - `GET /v1/config/{key}`
 
+Demo service:
+
+- `GET /v1/payments/authorize`
+- `GET /actuator/health`
+- `GET /actuator/prometheus`
+
 OpenAPI documentation is available in `api/openapi.yaml`.
 
 ## Configuration
@@ -297,8 +308,21 @@ Agent:
 - `DATA_PLANE_URL`
 - `AGENT_ID`
 - `AGENT_INSTANCE_CREDENTIAL`
+- `CONTROL_PLANE_URL` optional, enables agent auto-registration and acknowledgements
+- `AGENT_BOOTSTRAP_TOKEN` required for auto-registration
+- `AGENT_SERVICE` or `SERVICE_NAME` default: `payment-service`
+- `AGENT_ENVIRONMENT` or `ENVIRONMENT` default: `production`
+- `AGENT_INSTANCE` default: `AGENT_ID`
 - `AGENT_CACHE_PATH` default: `var/safeconfig/snapshot.json`
 - `AGENT_POLL_INTERVAL` default: `2s`
+
+Demo service:
+
+- `SERVER_PORT` default: `8090`
+- `SAFECONFIG_AGENT_URL` default: `http://localhost:8082`
+- `SAFECONFIG_FAILURE_RATE_KEY` default: `payment.failure_rate`
+- `DEMO_DEFAULT_FAILURE_RATE` default: `0.0`
+- `SAFECONFIG_REQUEST_TIMEOUT` default: `500ms`
 
 ## Test
 
@@ -327,6 +351,23 @@ SAFE_CONFIG_TEST_DATABASE_URL='postgres://safe_config:safe_config@localhost:5432
 go test ./internal/storage/postgres
 ```
 
+Demo service test:
+
+```bash
+cd examples/demo-service
+mvn test
+```
+
+Kubernetes manifest validation:
+
+```bash
+kubectl kustomize deploy/kubernetes/base
+kubectl kustomize deploy/kubernetes/demo
+```
+
+The local Kubernetes demo is documented in `deploy/kubernetes/README.md`.
+The recorded Kubernetes demo scenario is documented in `docs/kubernetes-demo-scenario.md`.
+
 ## Security Notes
 
 - SafeConfig is not a secret manager.
@@ -339,4 +380,3 @@ go test ./internal/storage/postgres
 ## Planned Work
 
 - Multi-replica control plane behavior
-- Kubernetes deployment examples

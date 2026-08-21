@@ -5,6 +5,7 @@ Safe Dynamic Configuration Platform.md
 bin/
 dist/
 coverage.out
+target/
 
 .env
 .env.*

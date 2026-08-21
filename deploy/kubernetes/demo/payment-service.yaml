@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-demo-service
+  namespace: demo
+spec:
+  replicas: 20
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-demo-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment-demo-service
+    spec:
+      containers:
+        - name: app
+          image: safeconfig/payment-demo-service:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - name: SAFECONFIG_AGENT_URL
+              value: http://localhost:8082
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+        - name: safeconfig-agent
+          image: safeconfig/agent:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: agent-http
+              containerPort: 8082
+          env:
+            - name: AGENT_ADDR
+              value: :8082
+            - name: CONTROL_PLANE_URL
+              value: http://control-plane.safe-config-system.svc.cluster.local:8080
+            - name: DATA_PLANE_URL
+              value: http://data-plane.safe-config-system.svc.cluster.local:8081
+            - name: AGENT_BOOTSTRAP_TOKEN
+              value: dev-bootstrap-token
+            - name: AGENT_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: AGENT_SERVICE
+              value: payment-service
+            - name: AGENT_ENVIRONMENT
+              value: production
+            - name: AGENT_INSTANCE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: AGENT_CACHE_PATH
+              value: /var/lib/safeconfig/snapshot.json
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: agent-http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: agent-http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: safeconfig-cache
+              mountPath: /var/lib/safeconfig
+      volumes:
+        - name: safeconfig-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-demo-service
+  namespace: demo
+spec:
+  selector:
+    app.kubernetes.io/name: payment-demo-service
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http

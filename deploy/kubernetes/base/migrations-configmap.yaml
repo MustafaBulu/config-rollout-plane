@@ -1,0 +1,185 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: safeconfig-migrations
+  namespace: safe-config-system
+data:
+  000001_foundation.sql: |
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+        version BIGINT PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    INSERT INTO schema_migrations (version, name)
+    VALUES (1, 'foundation')
+    ON CONFLICT (version) DO NOTHING;
+  000002_config_registry.sql: |
+    CREATE TABLE IF NOT EXISTS tenants (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        owner TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS config_definitions (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+        config_key TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        schema JSONB NOT NULL,
+        default_value JSONB,
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL,
+        UNIQUE (tenant_id, config_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS config_versions (
+        id TEXT PRIMARY KEY,
+        config_definition_id TEXT NOT NULL REFERENCES config_definitions(id) ON DELETE RESTRICT,
+        version_number INTEGER NOT NULL CHECK (version_number > 0),
+        value JSONB NOT NULL,
+        source_commit_sha TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL,
+        UNIQUE (config_definition_id, version_number)
+    );
+
+    CREATE TABLE IF NOT EXISTS config_environment_states (
+        config_definition_id TEXT NOT NULL REFERENCES config_definitions(id) ON DELETE RESTRICT,
+        environment TEXT NOT NULL CHECK (environment IN ('development', 'staging', 'production')),
+        stable_version_id TEXT REFERENCES config_versions(id) ON DELETE RESTRICT,
+        active_rollout_id TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (config_definition_id, environment)
+    );
+
+    INSERT INTO schema_migrations (version, name)
+    VALUES (2, 'config_registry')
+    ON CONFLICT (version) DO NOTHING;
+  000003_agents.sql: |
+    CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        service TEXT NOT NULL,
+        environment TEXT NOT NULL CHECK (environment IN ('development', 'staging', 'production')),
+        zone TEXT NOT NULL DEFAULT '',
+        instance TEXT NOT NULL,
+        labels JSONB NOT NULL DEFAULT '{}',
+        registered_at TIMESTAMPTZ NOT NULL,
+        last_seen_at TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_credentials (
+        token TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_acknowledgements (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        config_definition_id TEXT NOT NULL REFERENCES config_definitions(id) ON DELETE RESTRICT,
+        version_id TEXT NOT NULL REFERENCES config_versions(id) ON DELETE RESTRICT,
+        snapshot_revision BIGINT NOT NULL CHECK (snapshot_revision > 0),
+        counted BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL,
+        UNIQUE (agent_id, config_definition_id, version_id, snapshot_revision)
+    );
+
+    INSERT INTO schema_migrations (version, name)
+    VALUES (3, 'agents')
+    ON CONFLICT (version) DO NOTHING;
+  000004_rollouts.sql: |
+    CREATE TABLE IF NOT EXISTS rollouts (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+        config_definition_id TEXT NOT NULL REFERENCES config_definitions(id) ON DELETE RESTRICT,
+        config_key TEXT NOT NULL,
+        environment TEXT NOT NULL CHECK (environment IN ('development', 'staging', 'production')),
+        target_services JSONB NOT NULL DEFAULT '[]',
+        stable_version_id TEXT NOT NULL REFERENCES config_versions(id) ON DELETE RESTRICT,
+        candidate_version_id TEXT NOT NULL REFERENCES config_versions(id) ON DELETE RESTRICT,
+        candidate_version_number INTEGER NOT NULL CHECK (candidate_version_number > 0),
+        state TEXT NOT NULL CHECK (state IN (
+            'PENDING',
+            'VALIDATING',
+            'READY',
+            'DEPLOYING',
+            'EVALUATING',
+            'PROMOTING',
+            'PAUSED',
+            'COMPLETED',
+            'ROLLING_BACK',
+            'ROLLED_BACK',
+            'FAILED'
+        )),
+        current_stage_id TEXT NOT NULL DEFAULT '',
+        current_stage_index INTEGER NOT NULL DEFAULT 0 CHECK (current_stage_index >= 0),
+        required_ack_percentage DOUBLE PRECISION NOT NULL DEFAULT 95,
+        stage_started_at TIMESTAMPTZ NOT NULL,
+        deployment_timeout_seconds INTEGER NOT NULL DEFAULT 90 CHECK (deployment_timeout_seconds >= 0),
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS rollout_stages (
+        id TEXT PRIMARY KEY,
+        rollout_id TEXT NOT NULL REFERENCES rollouts(id) ON DELETE CASCADE,
+        stage_order INTEGER NOT NULL CHECK (stage_order > 0),
+        percentage INTEGER NOT NULL CHECK (percentage > 0 AND percentage <= 100),
+        minimum_duration_seconds INTEGER NOT NULL CHECK (minimum_duration_seconds >= 0),
+        activated_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        UNIQUE (rollout_id, stage_order),
+        UNIQUE (rollout_id, percentage)
+    );
+
+    CREATE TABLE IF NOT EXISTS rollout_stage_targets (
+        rollout_id TEXT NOT NULL REFERENCES rollouts(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL REFERENCES rollout_stages(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+        bucket INTEGER NOT NULL CHECK (bucket >= 0 AND bucket < 10000),
+        expected_version_id TEXT NOT NULL REFERENCES config_versions(id) ON DELETE RESTRICT,
+        snapshot_revision BIGINT NOT NULL CHECK (snapshot_revision > 0),
+        status TEXT NOT NULL CHECK (status IN ('PENDING', 'ACKED')),
+        created_at TIMESTAMPTZ NOT NULL,
+        acked_at TIMESTAMPTZ,
+        PRIMARY KEY (rollout_id, stage_id, agent_id),
+        UNIQUE (rollout_id, stage_id, snapshot_revision, expected_version_id, agent_id)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS one_active_rollout_per_config_environment
+    ON rollouts (config_definition_id, environment)
+    WHERE state IN (
+        'PENDING',
+        'VALIDATING',
+        'READY',
+        'DEPLOYING',
+        'EVALUATING',
+        'PROMOTING',
+        'PAUSED',
+        'ROLLING_BACK'
+    );
+
+    CREATE SEQUENCE IF NOT EXISTS snapshot_revisions START WITH 1;
+
+    INSERT INTO schema_migrations (version, name)
+    VALUES (4, 'rollouts')
+    ON CONFLICT (version) DO NOTHING;
+  000005_guardrails.sql: |
+    ALTER TABLE rollouts
+    ADD COLUMN IF NOT EXISTS guardrails JSONB NOT NULL DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS guardrail_failures JSONB NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS rollout_max_duration_seconds INTEGER NOT NULL DEFAULT 900 CHECK (rollout_max_duration_seconds >= 0),
+    ADD COLUMN IF NOT EXISTS rollback_timeout_seconds INTEGER NOT NULL DEFAULT 120 CHECK (rollback_timeout_seconds >= 0),
+    ADD COLUMN IF NOT EXISTS rollback_status TEXT NOT NULL DEFAULT '' CHECK (rollback_status IN ('', 'VERIFIED', 'PARTIAL'));
+
+    ALTER TABLE rollout_stages
+    DROP CONSTRAINT IF EXISTS rollout_stages_rollout_id_percentage_key;
+
+    INSERT INTO schema_migrations (version, name)
+    VALUES (5, 'guardrails')
+    ON CONFLICT (version) DO NOTHING;

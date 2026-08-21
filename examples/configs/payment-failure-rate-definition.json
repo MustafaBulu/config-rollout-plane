@@ -1,0 +1,10 @@
+{
+  "key": "payment.failure_rate",
+  "description": "Synthetic payment authorization failure rate used by the demo service.",
+  "schema": {
+    "type": "number",
+    "minimum": 0,
+    "maximum": 1
+  },
+  "default": 0
+}

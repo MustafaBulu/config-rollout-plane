@@ -67,6 +67,72 @@ type Acknowledger interface {
 	Acknowledge(ctx context.Context, agentID string, token string, item dataplane.SnapshotItem, revision int64) error
 }
 
+type RegistrationClient struct {
+	BaseURL    string
+	HTTPClient *http.Client
+}
+
+type RegisterInput struct {
+	BootstrapToken string            `json:"bootstrap_token"`
+	ID             string            `json:"id,omitempty"`
+	Service        string            `json:"service"`
+	Environment    string            `json:"environment"`
+	Zone           string            `json:"zone,omitempty"`
+	Instance       string            `json:"instance"`
+	Labels         map[string]string `json:"labels,omitempty"`
+}
+
+type RegisterResult struct {
+	AgentID            string
+	InstanceCredential string
+}
+
+func (c RegistrationClient) Register(ctx context.Context, input RegisterInput) (RegisterResult, error) {
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+
+	body, err := json.Marshal(input)
+	if err != nil {
+		return RegisterResult{}, err
+	}
+
+	url := strings.TrimRight(c.BaseURL, "/") + "/v1/agents/register"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return RegisterResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return RegisterResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return RegisterResult{}, fmt.Errorf("agent registration failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	var payload registerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return RegisterResult{}, err
+	}
+	return RegisterResult{
+		AgentID:            payload.Agent.ID,
+		InstanceCredential: payload.InstanceCredential,
+	}, nil
+}
+
+type registerResponse struct {
+	Agent struct {
+		ID string `json:"id"`
+	} `json:"agent"`
+	InstanceCredential string `json:"instance_credential"`
+}
+
 type ControlPlaneAcknowledger struct {
 	BaseURL    string
 	HTTPClient *http.Client
