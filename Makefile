@@ -1,4 +1,4 @@
-.PHONY: build test fmt vet dev-up dev-down migrate-up clean
+.PHONY: build test fmt vet config-validate dev-up dev-down migrate-up clean
 
 COMPOSE_FILE := deploy/docker-compose/docker-compose.yml
 
@@ -13,6 +13,9 @@ fmt:
 
 vet:
 	go vet ./...
+
+config-validate:
+	go run ./cmd/cfgctl validate examples/config-as-code
 
 dev-up:
 	docker compose -f $(COMPOSE_FILE) up -d

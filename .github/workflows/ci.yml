@@ -21,3 +21,6 @@ jobs:
 
       - name: Build
         run: make build
+
+      - name: Validate config manifests
+        run: make config-validate

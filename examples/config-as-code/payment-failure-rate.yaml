@@ -1,0 +1,84 @@
+apiVersion: safeconfig.dev/v1alpha1
+kind: Tenant
+metadata:
+  name: payments
+spec:
+  name: Payments
+  description: Payment authorization services
+  owner: platform@example.com
+---
+apiVersion: safeconfig.dev/v1alpha1
+kind: ConfigDefinition
+metadata:
+  name: payment-failure-rate
+spec:
+  tenant: payments
+  key: payment.failure_rate
+  description: Synthetic payment authorization failure rate used by the demo service.
+  schema:
+    type: number
+    minimum: 0
+    maximum: 1
+  default: 0
+---
+apiVersion: safeconfig.dev/v1alpha1
+kind: ConfigVersion
+metadata:
+  name: payment-failure-rate-v1
+spec:
+  tenant: payments
+  key: payment.failure_rate
+  value: 0
+  createdBy: demo
+---
+apiVersion: safeconfig.dev/v1alpha1
+kind: ConfigVersion
+metadata:
+  name: payment-failure-rate-v2-bad
+spec:
+  tenant: payments
+  key: payment.failure_rate
+  value: 0.2
+  createdBy: demo
+---
+apiVersion: safeconfig.dev/v1alpha1
+kind: StableVersion
+metadata:
+  name: payment-failure-rate-production
+spec:
+  tenant: payments
+  key: payment.failure_rate
+  environment: production
+  versionNumber: 1
+---
+apiVersion: safeconfig.dev/v1alpha1
+kind: Rollout
+metadata:
+  name: payment-failure-rate-bad-rollout
+spec:
+  tenant: payments
+  key: payment.failure_rate
+  environment: production
+  candidateVersion: 2
+  targetServices:
+    - payment-service
+  stages:
+    - id: stage-5
+      percentage: 5
+      minimumDurationSeconds: 10
+    - id: stage-25
+      percentage: 25
+      minimumDurationSeconds: 20
+    - id: stage-100
+      percentage: 100
+      minimumDurationSeconds: 30
+  guardrails:
+    - name: candidate-error-rate
+      query: sum(rate(payment_requests_total{config_version="2",result="error"}[30s])) / clamp_min(sum(rate(payment_requests_total{config_version="2"}[30s])), 1)
+      operator: <
+      threshold: 0.05
+      consecutiveFailures: 2
+  requiredAckPercentage: 90
+  deploymentTimeoutSeconds: 60
+  rolloutMaxDurationSeconds: 300
+  rollbackTimeoutSeconds: 120

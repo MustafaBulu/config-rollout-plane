@@ -368,6 +368,25 @@ kubectl kustomize deploy/kubernetes/demo
 The local Kubernetes demo is documented in `deploy/kubernetes/README.md`.
 The recorded Kubernetes demo scenario is documented in `docs/kubernetes-demo-scenario.md`.
 
+## Config-as-Code
+
+SafeConfig YAML manifests use `apiVersion`, `kind`, `metadata`, and `spec` fields. The initial
+workflow validates manifests before they are reviewed or applied.
+
+Example manifests live in `examples/config-as-code`.
+
+Validate them locally:
+
+```bash
+go run ./cmd/cfgctl validate examples/config-as-code
+```
+
+The same validation runs in GitHub Actions through:
+
+```bash
+make config-validate
+```
+
 ## Security Notes
 
 - SafeConfig is not a secret manager.
