@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 
 	"gopkg.in/yaml.v3"
 )
@@ -61,17 +62,17 @@ type ConfigVersionSpec struct {
 }
 
 type StableVersionSpec struct {
-	Tenant        string `yaml:"tenant"`
-	Key           string `yaml:"key"`
-	Environment   string `yaml:"environment"`
-	VersionNumber int    `yaml:"versionNumber"`
+	Tenant      string `yaml:"tenant"`
+	Key         string `yaml:"key"`
+	Environment string `yaml:"environment"`
+	VersionRef  string `yaml:"versionRef"`
 }
 
 type RolloutSpec struct {
 	Tenant                    string          `yaml:"tenant"`
 	Key                       string          `yaml:"key"`
 	Environment               string          `yaml:"environment"`
-	CandidateVersion          int             `yaml:"candidateVersion"`
+	CandidateVersionRef       string          `yaml:"candidateVersionRef"`
 	TargetServices            []string        `yaml:"targetServices,omitempty"`
 	Stages                    []RolloutStage  `yaml:"stages,omitempty"`
 	Guardrails                []GuardrailRule `yaml:"guardrails,omitempty"`
@@ -102,6 +103,14 @@ func (r RawJSON) MarshalJSON() ([]byte, error) {
 		return []byte("null"), nil
 	}
 	return r, nil
+}
+
+func (r *RawJSON) UnmarshalJSON(data []byte) error {
+	if !json.Valid(data) {
+		return fmt.Errorf("invalid json")
+	}
+	*r = append((*r)[:0], data...)
+	return nil
 }
 
 func (r *RawJSON) UnmarshalYAML(value *yaml.Node) error {
@@ -256,5 +265,13 @@ func (r RawJSON) Valid() bool {
 }
 
 func (r RawJSON) EqualJSON(other RawJSON) bool {
-	return bytes.Equal(bytes.TrimSpace(r), bytes.TrimSpace(other))
+	var left any
+	var right any
+	if err := json.Unmarshal(r, &left); err != nil {
+		return bytes.Equal(bytes.TrimSpace(r), bytes.TrimSpace(other))
+	}
+	if err := json.Unmarshal(other, &right); err != nil {
+		return bytes.Equal(bytes.TrimSpace(r), bytes.TrimSpace(other))
+	}
+	return reflect.DeepEqual(left, right)
 }

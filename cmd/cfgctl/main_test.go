@@ -29,3 +29,21 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 }
+
+func TestRunApplyDryRun(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tenant.yaml")
+	if err := os.WriteFile(path, []byte(`apiVersion: safeconfig.dev/v1alpha1
+kind: Tenant
+metadata:
+  name: payments
+spec:
+  name: Payments
+`), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if err := run([]string{"apply", "--dry-run", path}); err != nil {
+		t.Fatalf("apply dry run: %v", err)
+	}
+}

@@ -55,7 +55,7 @@ spec:
   tenant: payments
   key: payment.failure_rate
   environment: production
-  versionNumber: 1
+  versionRef: payment-failure-rate-v1
 ---
 apiVersion: safeconfig.dev/v1alpha1
 kind: Rollout
@@ -65,7 +65,7 @@ spec:
   tenant: payments
   key: payment.failure_rate
   environment: production
-  candidateVersion: 2
+  candidateVersionRef: payment-failure-rate-v2
   targetServices:
     - payment-service
   stages:
@@ -136,10 +136,49 @@ spec:
   tenant: payments
   key: payment.failure_rate
   environment: production
-  candidateVersion: 1
+  candidateVersionRef: missing-version
   stages:
     - id: stage-50
       percentage: 50
+`)
+
+	report := Validator{}.ValidatePaths([]string{path})
+	if report.OK() {
+		t.Fatalf("expected validation errors")
+	}
+}
+
+func TestValidatorRejectsMissingConfigVersionDefinition(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "version.yaml")
+	writeFile(t, path, `apiVersion: safeconfig.dev/v1alpha1
+kind: ConfigVersion
+metadata:
+  name: payment-failure-rate-v1
+spec:
+  tenant: payments
+  key: payment.failure_rate
+  value: 0
+`)
+
+	report := Validator{}.ValidatePaths([]string{path})
+	if report.OK() {
+		t.Fatalf("expected validation errors")
+	}
+}
+
+func TestValidatorRejectsMissingVersionReference(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stable.yaml")
+	writeFile(t, path, `apiVersion: safeconfig.dev/v1alpha1
+kind: StableVersion
+metadata:
+  name: payment-failure-rate-production
+spec:
+  tenant: payments
+  key: payment.failure_rate
+  environment: production
+  versionRef: payment-failure-rate-v1
 `)
 
 	report := Validator{}.ValidatePaths([]string{path})

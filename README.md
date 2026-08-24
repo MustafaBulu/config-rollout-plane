@@ -370,8 +370,8 @@ The recorded Kubernetes demo scenario is documented in `docs/kubernetes-demo-sce
 
 ## Config-as-Code
 
-SafeConfig YAML manifests use `apiVersion`, `kind`, `metadata`, and `spec` fields. The initial
-workflow validates manifests before they are reviewed or applied.
+SafeConfig YAML manifests use `apiVersion`, `kind`, `metadata`, and `spec` fields. The workflow
+validates manifests in CI and can apply reviewed manifests to the control plane.
 
 Example manifests live in `examples/config-as-code`.
 
@@ -386,6 +386,31 @@ The same validation runs in GitHub Actions through:
 ```bash
 make config-validate
 ```
+
+Preview the apply plan without writing:
+
+```bash
+go run ./cmd/cfgctl apply --dry-run examples/config-as-code
+```
+
+Apply reviewed manifests to a running control plane:
+
+```bash
+go run ./cmd/cfgctl apply \
+  --control-plane-url http://localhost:8080 \
+  examples/config-as-code
+```
+
+Rollout manifests are skipped by default during writes. Start rollout manifests explicitly:
+
+```bash
+go run ./cmd/cfgctl apply \
+  --control-plane-url http://localhost:8080 \
+  --include-rollouts \
+  examples/config-as-code
+```
+
+`SAFECONFIG_CONTROL_PLANE_URL` and `SAFECONFIG_TOKEN` can be used instead of the corresponding flags.
 
 ## Security Notes
 

@@ -42,7 +42,7 @@ type Validator struct {
 }
 
 func (v Validator) ValidatePaths(paths []string) Report {
-	files, diagnostics := collectManifestFiles(paths)
+	documents, files, diagnostics := LoadManifestDocuments(paths)
 	report := Report{
 		Files:  len(files),
 		Errors: diagnostics,
@@ -51,26 +51,10 @@ func (v Validator) ValidatePaths(paths []string) Report {
 		return report
 	}
 
-	var documents []manifestDocument
-	for _, file := range files {
-		manifests, err := readManifestFile(file)
-		if err != nil {
-			report.Errors = append(report.Errors, Diagnostic{Path: file, Message: err.Error()})
-			continue
-		}
-		report.Manifests += len(manifests)
-		for i, manifest := range manifests {
-			documents = append(documents, manifestDocument{
-				path:     file,
-				document: i + 1,
-				manifest: manifest,
-			})
-		}
-	}
-
+	report.Manifests = len(documents)
 	state := buildValidationState(documents)
 	for _, document := range documents {
-		diagnostics := v.validateManifest(document.path, document.document, document.manifest, state)
+		diagnostics := v.validateManifest(document.Path, document.Document, document.Manifest, state)
 		report.Errors = append(report.Errors, diagnostics...)
 	}
 	return report
@@ -126,11 +110,17 @@ func (v Validator) validateManifest(path string, document int, manifest Manifest
 		}
 	case KindConfigVersion:
 		spec := manifest.ConfigVersion
+		if state.versionNameCounts[manifest.Metadata.Name] > 1 {
+			add("ConfigVersion metadata.name %q must be unique", manifest.Metadata.Name)
+		}
 		if strings.TrimSpace(spec.Tenant) == "" {
 			add("spec.tenant is required")
 		}
 		if strings.TrimSpace(spec.Key) == "" {
 			add("spec.key is required")
+		}
+		if _, ok := state.definitions[configKey(spec.Tenant, spec.Key)]; !ok {
+			add("matching ConfigDefinition for %s/%s is required", spec.Tenant, spec.Key)
 		}
 		if len(spec.Value) == 0 {
 			add("spec.value is required")
@@ -148,22 +138,22 @@ func (v Validator) validateManifest(path string, document int, manifest Manifest
 	case KindStableVersion:
 		spec := manifest.StableVersion
 		validateTenantKeyEnvironment(spec.Tenant, spec.Key, spec.Environment, add)
-		if spec.VersionNumber < 1 {
-			add("spec.versionNumber must be positive")
-		}
-		if spec.VersionNumber > 0 {
-			if count := state.versions[configKey(spec.Tenant, spec.Key)]; count > 0 && spec.VersionNumber > count {
-				add("spec.versionNumber references version %d, but only %d version manifests were seen before it", spec.VersionNumber, count)
-			}
+		if strings.TrimSpace(spec.VersionRef) == "" {
+			add("spec.versionRef is required")
+		} else if version, ok := state.versionRefs[spec.VersionRef]; !ok {
+			add("spec.versionRef %q does not match a ConfigVersion metadata.name", spec.VersionRef)
+		} else if version.Tenant != spec.Tenant || version.Key != spec.Key {
+			add("spec.versionRef %q points to %s/%s, not %s/%s", spec.VersionRef, version.Tenant, version.Key, spec.Tenant, spec.Key)
 		}
 	case KindRollout:
 		spec := manifest.Rollout
 		validateTenantKeyEnvironment(spec.Tenant, spec.Key, spec.Environment, add)
-		if spec.CandidateVersion < 1 {
-			add("spec.candidateVersion must be positive")
-		}
-		if count := state.versions[configKey(spec.Tenant, spec.Key)]; count > 0 && spec.CandidateVersion > count {
-			add("spec.candidateVersion references version %d, but only %d version manifests were seen before it", spec.CandidateVersion, count)
+		if strings.TrimSpace(spec.CandidateVersionRef) == "" {
+			add("spec.candidateVersionRef is required")
+		} else if version, ok := state.versionRefs[spec.CandidateVersionRef]; !ok {
+			add("spec.candidateVersionRef %q does not match a ConfigVersion metadata.name", spec.CandidateVersionRef)
+		} else if version.Tenant != spec.Tenant || version.Key != spec.Key {
+			add("spec.candidateVersionRef %q points to %s/%s, not %s/%s", spec.CandidateVersionRef, version.Tenant, version.Key, spec.Tenant, spec.Key)
 		}
 		if len(spec.Stages) > 0 {
 			stages := make([]rollout.Stage, 0, len(spec.Stages))
@@ -219,32 +209,35 @@ func (v Validator) schemaValidator() configregistry.SchemaValidator {
 }
 
 type validationState struct {
-	definitions map[string]ConfigDefinitionSpec
-	versions    map[string]int
+	definitions       map[string]ConfigDefinitionSpec
+	versionRefs       map[string]ConfigVersionSpec
+	versionNameCounts map[string]int
 }
 
-type manifestDocument struct {
-	path     string
-	document int
-	manifest Manifest
+type ManifestDocument struct {
+	Path     string
+	Document int
+	Manifest Manifest
 }
 
-func buildValidationState(documents []manifestDocument) validationState {
+func buildValidationState(documents []ManifestDocument) validationState {
 	state := validationState{
-		definitions: make(map[string]ConfigDefinitionSpec),
-		versions:    make(map[string]int),
+		definitions:       make(map[string]ConfigDefinitionSpec),
+		versionRefs:       make(map[string]ConfigVersionSpec),
+		versionNameCounts: make(map[string]int),
 	}
 	for _, document := range documents {
-		switch document.manifest.Kind {
+		switch document.Manifest.Kind {
 		case KindConfigDefinition:
-			spec := document.manifest.ConfigDefinition
+			spec := document.Manifest.ConfigDefinition
 			if strings.TrimSpace(spec.Tenant) != "" && strings.TrimSpace(spec.Key) != "" && len(spec.Schema) > 0 {
 				state.definitions[configKey(spec.Tenant, spec.Key)] = spec
 			}
 		case KindConfigVersion:
-			spec := document.manifest.ConfigVersion
+			spec := document.Manifest.ConfigVersion
+			state.versionNameCounts[document.Manifest.Metadata.Name]++
 			if strings.TrimSpace(spec.Tenant) != "" && strings.TrimSpace(spec.Key) != "" {
-				state.versions[configKey(spec.Tenant, spec.Key)]++
+				state.versionRefs[document.Manifest.Metadata.Name] = spec
 			}
 		}
 	}
@@ -261,6 +254,30 @@ func validateTenantKeyEnvironment(tenant string, key string, environment string,
 	if err := domain.Environment(environment).Validate(); err != nil {
 		add("spec.environment is invalid: %v", err)
 	}
+}
+
+func LoadManifestDocuments(paths []string) ([]ManifestDocument, []string, []Diagnostic) {
+	files, diagnostics := collectManifestFiles(paths)
+	if len(diagnostics) > 0 {
+		return nil, files, diagnostics
+	}
+
+	var documents []ManifestDocument
+	for _, file := range files {
+		manifests, err := readManifestFile(file)
+		if err != nil {
+			diagnostics = append(diagnostics, Diagnostic{Path: file, Message: err.Error()})
+			continue
+		}
+		for i, manifest := range manifests {
+			documents = append(documents, ManifestDocument{
+				Path:     file,
+				Document: i + 1,
+				Manifest: manifest,
+			})
+		}
+	}
+	return documents, files, diagnostics
 }
 
 func collectManifestFiles(paths []string) ([]string, []Diagnostic) {
