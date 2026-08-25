@@ -18,11 +18,12 @@ and rollback verification are implemented.
 
 ## Architecture
 
-The platform is organized as a Go monorepo with three runnable binaries.
+The platform is organized as a Go monorepo with four runnable binaries.
 
 - `control-plane`: authoritative API for tenants, config definitions, immutable versions, stable environment state, agent registration, heartbeats, and acknowledgements.
 - `data-plane`: read-optimized API that serves agent-specific configuration snapshots with ETag support.
 - `agent`: local sidecar-style process that polls snapshots, validates checksums, writes a durable cache, and exposes config to the application over localhost.
+- `simulator`: local virtual-agent load simulator for scale evidence.
 
 ```text
 Developer / API client
@@ -80,6 +81,8 @@ use the in-memory store behind the same Go interface.
 - Prometheus guardrail evaluation
 - Automatic health-based rollback
 - Rollback verification with VERIFIED/PARTIAL outcomes
+- 1000-agent virtual simulator
+- Simulator latency and throughput reporting
 - Spring Boot payment demo service
 - Demo service Prometheus metrics
 - Docker build files for local images
@@ -132,6 +135,17 @@ Main responsibilities:
 - validate snapshot checksums
 - write and load local snapshot cache
 - serve config to local applications
+
+### `cmd/simulator`
+
+Runs a local in-memory 5/25/100 rollout simulation with virtual agents.
+
+Main responsibilities:
+
+- register virtual agents
+- read rollout-aware snapshots
+- acknowledge assigned rollout stages
+- report snapshot and acknowledgement latency
 
 ## Local Runtime
 
@@ -367,6 +381,16 @@ kubectl kustomize deploy/kubernetes/demo
 
 The local Kubernetes demo is documented in `deploy/kubernetes/README.md`.
 The recorded Kubernetes demo scenario is documented in `docs/kubernetes-demo-scenario.md`.
+
+## Scale Simulator
+
+Run the default 1000-agent local simulation:
+
+```bash
+go run ./cmd/simulator -agents 1000 -concurrency 64
+```
+
+The simulator is documented in `docs/scale-simulator.md`.
 
 ## Config-as-Code
 
