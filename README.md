@@ -381,6 +381,7 @@ kubectl kustomize deploy/kubernetes/demo
 
 The local Kubernetes demo is documented in `deploy/kubernetes/README.md`.
 The recorded Kubernetes demo scenario is documented in `docs/kubernetes-demo-scenario.md`.
+The reliability scenario harness is documented in `docs/reliability-scenarios.md`.
 
 ## Scale Simulator
 
