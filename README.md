@@ -382,6 +382,7 @@ kubectl kustomize deploy/kubernetes/demo
 The local Kubernetes demo is documented in `deploy/kubernetes/README.md`.
 The recorded Kubernetes demo scenario is documented in `docs/kubernetes-demo-scenario.md`.
 The reliability scenario harness is documented in `docs/reliability-scenarios.md`.
+The latest local reliability evidence is documented in `docs/reliability-results.md`.
 
 ## Scale Simulator
 
@@ -392,6 +393,22 @@ go run ./cmd/simulator -agents 1000 -concurrency 64
 ```
 
 The simulator is documented in `docs/scale-simulator.md`.
+
+## Reliability Evidence
+
+Run the local reliability evidence suite:
+
+```bash
+make reliability
+```
+
+Equivalent direct command:
+
+```bash
+go run ./cmd/reliability -scenario all -concurrency 32
+```
+
+The latest recorded local result is documented in `docs/reliability-results.md`.
 
 ## Config-as-Code
 

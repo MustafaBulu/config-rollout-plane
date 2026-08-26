@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"config-rollout-plane/internal/configregistry"
@@ -39,6 +40,7 @@ type AgentSource interface {
 }
 
 type Service struct {
+	mu        sync.Mutex
 	store     Store
 	registry  Registry
 	agents    AgentSource
@@ -78,6 +80,9 @@ func (s *Service) SetGuardrailQueryer(queryer guardrail.Queryer) {
 }
 
 func (s *Service) CreateRollout(ctx context.Context, input CreateRolloutInput) (Rollout, []StageTarget, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if input.TenantID == "" || input.Key == "" {
 		return Rollout{}, nil, fmt.Errorf("%w: tenant and key are required", ErrInvalidInput)
 	}
@@ -208,6 +213,9 @@ type AcknowledgeResult struct {
 }
 
 func (s *Service) Acknowledge(ctx context.Context, input AcknowledgeInput) (AcknowledgeResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	rollout, err := s.store.GetRollout(ctx, input.RolloutID)
 	if err != nil {
 		return AcknowledgeResult{}, err
@@ -300,6 +308,9 @@ func (s *Service) ActiveRollout(ctx context.Context, configDefinitionID string, 
 }
 
 func (s *Service) ReconcileActive(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	active, err := s.store.ListActiveRollouts(ctx)
 	if err != nil {
 		return err

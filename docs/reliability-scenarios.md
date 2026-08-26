@@ -12,6 +12,10 @@ Implemented scenarios:
 - `data-plane-outage`: registers an agent, warms the local snapshot cache from the data plane,
   injects a data-plane outage, verifies polling fails, and verifies the cached config remains
   readable.
+- `concurrent-rollout-acknowledgements`: registers 200 agents, creates a 100 percent rollout, and
+  acknowledges every rollout target concurrently through the HTTP control-plane API.
+- `rollback-propagation-timing`: triggers an unhealthy guarded rollout, activates rollback
+  verification, acknowledges stable rollback snapshots, and records propagation timing.
 
 The harness exposes reusable failure hooks:
 
@@ -26,5 +30,14 @@ Run the scenarios with:
 go test ./internal/reliability
 ```
 
-These scenarios are not the final evidence suite. They provide the shared runner, result structs and
-failure hooks that the scale and reliability evidence suite can build on.
+Run the full evidence suite with:
+
+```bash
+go run ./cmd/reliability -scenario all -concurrency 32
+```
+
+Equivalent Make target:
+
+```bash
+make reliability
+```
