@@ -410,6 +410,30 @@ go run ./cmd/reliability -scenario all -concurrency 32
 
 The latest recorded local result is documented in `docs/reliability-results.md`.
 
+## AWS Terraform
+
+The AWS showcase Terraform root module is in `deploy/terraform/aws`.
+
+It prepares the VPC, subnets, routing, security groups, base IAM roles, EKS cluster, and default
+managed node group.
+
+```bash
+cd deploy/terraform/aws
+terraform init
+terraform validate
+terraform plan
+```
+
+After `terraform apply`, configure and validate `kubectl`:
+
+```bash
+make eks-kubeconfig
+make eks-nodes
+```
+
+Do not run `terraform apply` unless you are ready to create billable AWS resources. Destroy the
+showcase stack after testing.
+
 ## Config-as-Code
 
 SafeConfig YAML manifests use `apiVersion`, `kind`, `metadata`, and `spec` fields. The workflow

@@ -1,0 +1,12 @@
+aws_region              = "us-east-1"
+project_name            = "safeconfig"
+environment             = "showcase"
+vpc_cidr                = "10.42.0.0/16"
+availability_zone_count = 2
+enable_nat_gateway      = false
+eks_cluster_version     = "1.31"
+eks_node_subnet_tier    = "public"
+eks_node_desired_size   = 2
+eks_node_min_size       = 1
+eks_node_max_size       = 3
+eks_node_instance_types = ["t3.small"]

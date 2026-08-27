@@ -1,6 +1,7 @@
-.PHONY: build test fmt vet config-validate simulate reliability dev-up dev-down migrate-up clean
+.PHONY: build test fmt vet config-validate simulate reliability terraform-fmt terraform-validate eks-kubeconfig eks-nodes dev-up dev-down migrate-up clean
 
 COMPOSE_FILE := deploy/docker-compose/docker-compose.yml
+AWS_TERRAFORM_DIR := deploy/terraform/aws
 
 build:
 	go build ./cmd/...
@@ -22,6 +23,18 @@ simulate:
 
 reliability:
 	go run ./cmd/reliability -scenario all -concurrency 32
+
+terraform-fmt:
+	terraform -chdir=$(AWS_TERRAFORM_DIR) fmt
+
+terraform-validate:
+	terraform -chdir=$(AWS_TERRAFORM_DIR) validate
+
+eks-kubeconfig:
+	aws eks update-kubeconfig --region $$(terraform -chdir=$(AWS_TERRAFORM_DIR) output -raw aws_region) --name $$(terraform -chdir=$(AWS_TERRAFORM_DIR) output -raw eks_cluster_name)
+
+eks-nodes:
+	kubectl get nodes
 
 dev-up:
 	docker compose -f $(COMPOSE_FILE) up -d

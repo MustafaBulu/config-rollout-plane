@@ -12,3 +12,10 @@ target/
 !.env.example
 
 *.log
+
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
