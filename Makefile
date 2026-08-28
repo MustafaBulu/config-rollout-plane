@@ -1,4 +1,4 @@
-.PHONY: build test fmt vet staticcheck lint config-validate simulate reliability terraform-fmt terraform-validate eks-kubeconfig eks-nodes aws-platform-render aws-demo-render aws-apply-platform aws-apply-demo aws-wait-platform aws-wait-demo aws-smoke aws-delete-k8s terraform-destroy dev-up dev-down migrate-up clean
+.PHONY: build test race fmt vet staticcheck lint config-validate simulate reliability terraform-fmt terraform-validate eks-kubeconfig eks-nodes aws-platform-render aws-demo-render aws-apply-platform aws-apply-demo aws-wait-platform aws-wait-demo aws-smoke aws-delete-k8s terraform-destroy dev-up dev-down migrate-up clean
 
 COMPOSE_FILE := deploy/docker-compose/docker-compose.yml
 AWS_TERRAFORM_DIR := deploy/terraform/aws
@@ -8,6 +8,9 @@ build:
 
 test:
 	go test ./...
+
+race:
+	CGO_ENABLED=1 go test -race ./...
 
 fmt:
 	go fmt ./...

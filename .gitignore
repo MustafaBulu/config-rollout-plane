@@ -1,6 +1,7 @@
 .idea/
 *.iml
 Safe Dynamic Configuration Platform.md
+PROJECT_ROADMAP.md
 
 bin/
 dist/

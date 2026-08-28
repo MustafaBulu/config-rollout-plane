@@ -298,10 +298,14 @@ The same checks are available through Make:
 
 ```bash
 make test
+make race
 make build
 make lint
 make config-validate
 ```
+
+`make race` uses Go's race detector and requires cgo support. The GitHub Actions Linux runner has
+the required toolchain.
 
 Optional PostgreSQL integration test:
 
@@ -309,6 +313,9 @@ Optional PostgreSQL integration test:
 SAFE_CONFIG_TEST_DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' \
 go test ./internal/storage/postgres
 ```
+
+This covers the PostgreSQL acceptance flow and the concurrent active-rollout invariant for one
+config/environment.
 
 Demo service tests:
 
