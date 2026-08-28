@@ -55,6 +55,8 @@ Command entrypoints:
 The Spring Boot payment demo service in `examples/demo-service` reads config from the local agent and
 exports Prometheus metrics used by rollout guardrails.
 
+Details: `docs/architecture.md`, `docs/rollout-model.md`, `docs/adr/0001-foundation-first.md`.
+
 ## Quick Start
 
 This path runs the local agent against a seeded in-memory data plane. It is the fastest way to see
@@ -204,6 +206,8 @@ JSON output is available when the result needs to be captured by another tool:
 go run ./cmd/simulator -agents 1000 -concurrency 64 -format json
 ```
 
+Details and a sample local run: `docs/scale-simulator.md`.
+
 ## Reliability
 
 The reliability harness exercises the failure behavior that the project is built around.
@@ -224,6 +228,9 @@ JSON output:
 ```bash
 go run ./cmd/reliability -scenario all -concurrency 32 -format json
 ```
+
+Details: `docs/reliability-scenarios.md`, `docs/reliability-results.md`,
+`docs/failure-semantics.md`.
 
 ## APIs
 
