@@ -10,3 +10,5 @@ eks_node_desired_size   = 2
 eks_node_min_size       = 1
 eks_node_max_size       = 3
 eks_node_instance_types = ["t3.small"]
+create_ecr_repositories = true
+ecr_force_delete        = true

@@ -2,9 +2,6 @@
 
 This directory contains a local `kind` demo for SafeConfig.
 
-The full recording script and acceptance checkpoints are in
-`docs/kubernetes-demo-scenario.md`.
-
 It runs:
 
 - SafeConfig control plane

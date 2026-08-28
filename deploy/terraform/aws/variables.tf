@@ -130,3 +130,15 @@ variable "eks_node_disk_size_gb" {
   type        = number
   default     = 30
 }
+
+variable "create_ecr_repositories" {
+  description = "Create ECR repositories for SafeConfig showcase images."
+  type        = bool
+  default     = true
+}
+
+variable "ecr_force_delete" {
+  description = "Delete ECR repositories even when images remain. Useful for short-lived showcase cleanup."
+  type        = bool
+  default     = true
+}

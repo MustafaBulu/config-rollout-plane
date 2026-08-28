@@ -433,13 +433,3 @@ func percentile(sorted []time.Duration, percentile int) time.Duration {
 	}
 	return sorted[index]
 }
-
-func nonZero(values []time.Duration) []time.Duration {
-	result := make([]time.Duration, 0, len(values))
-	for _, value := range values {
-		if value > 0 {
-			result = append(result, value)
-		}
-	}
-	return result
-}

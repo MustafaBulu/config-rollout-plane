@@ -40,7 +40,6 @@ func TestBuildStageTargetsFreezesEligibleAgents(t *testing.T) {
 		}
 	}
 
-	agents = append(agents, domain.Agent{ID: "new-agent"})
 	if containsTarget(targets, "new-agent") {
 		t.Fatal("new agent should not appear in an already frozen target cohort")
 	}

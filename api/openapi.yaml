@@ -9,6 +9,12 @@ paths:
       responses:
         "200":
           description: Service is alive
+  /livez:
+    get:
+      summary: Liveness probe
+      responses:
+        "200":
+          description: Service is alive
   /readyz:
     get:
       summary: Readiness probe

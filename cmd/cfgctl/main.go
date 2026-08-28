@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"config-rollout-plane/internal/configcode"
@@ -11,7 +12,9 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		if _, writeErr := fmt.Fprintln(os.Stderr, err); writeErr != nil {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
@@ -27,8 +30,7 @@ func run(args []string) error {
 	case "apply":
 		return runApply(args[1:])
 	case "help", "-h", "--help":
-		printUsage(os.Stdout)
-		return nil
+		return printUsage(os.Stdout)
 	default:
 		return usageError()
 	}
@@ -42,15 +44,14 @@ func runValidate(args []string) error {
 	}
 
 	report := configcode.Validator{}.ValidatePaths(flags.Args())
-	for _, diagnostic := range report.Errors {
-		fmt.Fprintln(os.Stderr, diagnostic.String())
+	if err := printDiagnostics(os.Stderr, report.Errors); err != nil {
+		return err
 	}
 	if !report.OK() {
 		return fmt.Errorf("validation failed: %d error(s)", len(report.Errors))
 	}
 
-	fmt.Fprintf(os.Stdout, "validated %d manifest(s) in %d file(s)\n", report.Manifests, report.Files)
-	return nil
+	return writeLine(os.Stdout, "validated %d manifest(s) in %d file(s)\n", report.Manifests, report.Files)
 }
 
 func runApply(args []string) error {
@@ -65,8 +66,8 @@ func runApply(args []string) error {
 	}
 
 	report := configcode.Validator{}.ValidatePaths(flags.Args())
-	for _, diagnostic := range report.Errors {
-		fmt.Fprintln(os.Stderr, diagnostic.String())
+	if err := printDiagnostics(os.Stderr, report.Errors); err != nil {
+		return err
 	}
 	if !report.OK() {
 		return fmt.Errorf("validation failed: %d error(s)", len(report.Errors))
@@ -81,23 +82,44 @@ func runApply(args []string) error {
 		},
 	}
 	applyReport, err := applier.ApplyPaths(context.Background(), flags.Args())
-	for _, step := range applyReport.Steps {
-		fmt.Fprintf(os.Stdout, "%s %s %s: %s\n", step.Status, step.Action, step.Kind, step.Name)
-	}
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "processed %d step(s)\n", len(applyReport.Steps))
-	return nil
+	for _, step := range applyReport.Steps {
+		if err := writeLine(os.Stdout, "%s %s %s: %s\n", step.Status, step.Action, step.Kind, step.Name); err != nil {
+			return err
+		}
+	}
+	return writeLine(os.Stdout, "processed %d step(s)\n", len(applyReport.Steps))
 }
 
 func usageError() error {
-	printUsage(os.Stderr)
+	if err := printUsage(os.Stderr); err != nil {
+		return err
+	}
 	return fmt.Errorf("usage: cfgctl <command> [options]")
 }
 
-func printUsage(out *os.File) {
-	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  cfgctl validate [file-or-directory ...]")
-	fmt.Fprintln(out, "  cfgctl apply [--dry-run] [--include-rollouts] [--control-plane-url URL] [--token TOKEN] [file-or-directory ...]")
+func printUsage(out io.Writer) error {
+	if err := writeLine(out, "Usage:\n"); err != nil {
+		return err
+	}
+	if err := writeLine(out, "  cfgctl validate [file-or-directory ...]\n"); err != nil {
+		return err
+	}
+	return writeLine(out, "  cfgctl apply [--dry-run] [--include-rollouts] [--control-plane-url URL] [--token TOKEN] [file-or-directory ...]\n")
+}
+
+func printDiagnostics(out io.Writer, diagnostics []configcode.Diagnostic) error {
+	for _, diagnostic := range diagnostics {
+		if err := writeLine(out, "%s\n", diagnostic.String()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeLine(out io.Writer, format string, args ...any) error {
+	_, err := fmt.Fprintf(out, format, args...)
+	return err
 }

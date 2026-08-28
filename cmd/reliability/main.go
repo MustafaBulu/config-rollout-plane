@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -14,7 +15,9 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		if _, writeErr := fmt.Fprintln(os.Stderr, err); writeErr != nil {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
@@ -35,7 +38,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if removeErr := os.RemoveAll(tempDir); removeErr != nil {
+			if _, writeErr := fmt.Fprintf(os.Stderr, "remove temp dir: %v\n", removeErr); writeErr != nil {
+				return
+			}
+		}
+	}()
 
 	options := reliability.Options{
 		Service:     *service,
@@ -54,8 +63,7 @@ func run(args []string) error {
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(results)
 	case "text":
-		printText(results)
-		return nil
+		return writeText(os.Stdout, results)
 	default:
 		return fmt.Errorf("unsupported format %q", *format)
 	}
@@ -94,25 +102,39 @@ func runSelected(ctx context.Context, scenario string, options reliability.Optio
 	return results, nil
 }
 
-func printText(results []reliability.ScenarioResult) {
+func writeText(out io.Writer, results []reliability.ScenarioResult) error {
 	for _, result := range results {
 		status := "FAILED"
 		if result.Passed {
 			status = "PASSED"
 		}
-		fmt.Printf("scenario %s: %s duration=%s\n", result.Name, status, result.Duration.Round(time.Millisecond))
+		if err := writeLine(out, "scenario %s: %s duration=%s\n", result.Name, status, result.Duration.Round(time.Millisecond)); err != nil {
+			return err
+		}
 		for _, event := range result.Events {
 			eventStatus := "FAILED"
 			if event.Passed {
 				eventStatus = "PASSED"
 			}
-			fmt.Printf("  step %s: %s duration=%s\n", event.Name, eventStatus, event.Duration.Round(time.Millisecond))
+			if err := writeLine(out, "  step %s: %s duration=%s\n", event.Name, eventStatus, event.Duration.Round(time.Millisecond)); err != nil {
+				return err
+			}
 		}
 		for name, value := range result.Metrics {
-			fmt.Printf("  metric %s=%d\n", name, value)
+			if err := writeLine(out, "  metric %s=%d\n", name, value); err != nil {
+				return err
+			}
 		}
 		for name, value := range result.Timings {
-			fmt.Printf("  timing %s=%s\n", name, value.Round(time.Millisecond))
+			if err := writeLine(out, "  timing %s=%s\n", name, value.Round(time.Millisecond)); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
+}
+
+func writeLine(out io.Writer, format string, args ...any) error {
+	_, err := fmt.Fprintf(out, format, args...)
+	return err
 }

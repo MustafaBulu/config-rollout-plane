@@ -78,3 +78,10 @@ output "kubeconfig_command" {
   description = "Command to configure local kubectl for the EKS cluster."
   value       = "aws eks update-kubeconfig --region ${var.aws_region} --name ${aws_eks_cluster.this.name}"
 }
+
+output "ecr_repository_urls" {
+  description = "ECR repository URLs for SafeConfig images."
+  value = {
+    for name, repository in aws_ecr_repository.safeconfig : name => repository.repository_url
+  }
+}

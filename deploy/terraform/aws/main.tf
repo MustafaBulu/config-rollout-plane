@@ -9,6 +9,12 @@ locals {
   public_subnet_cidrs  = slice(var.public_subnet_cidrs, 0, var.availability_zone_count)
   private_subnet_cidrs = slice(var.private_subnet_cidrs, 0, var.availability_zone_count)
   eks_node_subnet_ids  = var.eks_node_subnet_tier == "public" ? values(aws_subnet.public)[*].id : values(aws_subnet.private)[*].id
+  ecr_repositories = toset([
+    "control-plane",
+    "data-plane",
+    "agent",
+    "payment-demo-service",
+  ])
 
   tags = {
     Project     = var.project_name
@@ -317,4 +323,20 @@ resource "aws_eks_node_group" "default" {
     aws_iam_role_policy_attachment.eks_cni_policy,
     aws_iam_role_policy_attachment.ec2_container_registry_read_only
   ]
+}
+
+resource "aws_ecr_repository" "safeconfig" {
+  for_each = var.create_ecr_repositories ? local.ecr_repositories : toset([])
+
+  name                 = "safeconfig/${each.key}"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = var.ecr_force_delete
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = {
+    Name = "safeconfig/${each.key}"
+  }
 }

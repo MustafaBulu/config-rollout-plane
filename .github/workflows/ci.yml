@@ -19,6 +19,12 @@ jobs:
       - name: Test
         run: make test
 
+      - name: Vet
+        run: make vet
+
+      - name: Staticcheck
+        run: make staticcheck
+
       - name: Build
         run: make build
 

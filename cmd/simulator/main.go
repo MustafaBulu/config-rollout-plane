@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -14,7 +15,9 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		if _, writeErr := fmt.Fprintln(os.Stderr, err); writeErr != nil {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
@@ -47,22 +50,33 @@ func run(args []string) error {
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(result)
 	case "text":
-		printText(result)
-		return nil
+		return writeText(os.Stdout, result)
 	default:
 		return fmt.Errorf("unsupported format %q", *format)
 	}
 }
 
-func printText(result simulator.Result) {
-	fmt.Printf("agents: %d registered\n", result.RegisteredAgents)
-	fmt.Printf("rollout: %s %s\n", result.RolloutID, result.FinalState)
-	fmt.Printf("duration: %s\n", result.Duration.Round(time.Millisecond))
-	fmt.Printf("throughput: agents=%.0f/s snapshots=%.0f/s acks=%.0f/s\n", result.AgentsPerSecond, result.SnapshotsPerSecond, result.AcksPerSecond)
-	fmt.Printf("snapshots: %d %s\n", result.SnapshotReads, formatLatency(result.SnapshotLatency))
-	fmt.Printf("acks: %d %s\n", result.Acknowledgements, formatLatency(result.AckLatency))
+func writeText(out io.Writer, result simulator.Result) error {
+	if err := writeLine(out, "agents: %d registered\n", result.RegisteredAgents); err != nil {
+		return err
+	}
+	if err := writeLine(out, "rollout: %s %s\n", result.RolloutID, result.FinalState); err != nil {
+		return err
+	}
+	if err := writeLine(out, "duration: %s\n", result.Duration.Round(time.Millisecond)); err != nil {
+		return err
+	}
+	if err := writeLine(out, "throughput: agents=%.0f/s snapshots=%.0f/s acks=%.0f/s\n", result.AgentsPerSecond, result.SnapshotsPerSecond, result.AcksPerSecond); err != nil {
+		return err
+	}
+	if err := writeLine(out, "snapshots: %d %s\n", result.SnapshotReads, formatLatency(result.SnapshotLatency)); err != nil {
+		return err
+	}
+	if err := writeLine(out, "acks: %d %s\n", result.Acknowledgements, formatLatency(result.AckLatency)); err != nil {
+		return err
+	}
 	for _, stage := range result.StageResults {
-		fmt.Printf("stage %s: targets=%d acked=%d coverage=%.2f%% next=%s/%s duration=%s\n",
+		if err := writeLine(out, "stage %s: targets=%d acked=%d coverage=%.2f%% next=%s/%s duration=%s\n",
 			stage.StageID,
 			stage.Targets,
 			stage.Acked,
@@ -70,8 +84,11 @@ func printText(result simulator.Result) {
 			stage.NextState,
 			stage.NextStage,
 			stage.Duration.Round(time.Millisecond),
-		)
+		); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func formatLatency(latency simulator.Latency) string {
@@ -82,4 +99,9 @@ func formatLatency(latency simulator.Latency) string {
 		latency.P95.Round(time.Microsecond),
 		latency.Max.Round(time.Microsecond),
 	)
+}
+
+func writeLine(out io.Writer, format string, args ...any) error {
+	_, err := fmt.Fprintf(out, format, args...)
+	return err
 }

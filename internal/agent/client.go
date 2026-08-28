@@ -52,7 +52,10 @@ func (c SnapshotClient) Fetch(ctx context.Context, etag string) (FetchResult, er
 		return FetchResult{ETag: etag, Changed: false}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if readErr != nil {
+			return FetchResult{}, readErr
+		}
 		return FetchResult{}, fmt.Errorf("snapshot request failed: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
@@ -112,7 +115,10 @@ func (c RegistrationClient) Register(ctx context.Context, input RegisterInput) (
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if readErr != nil {
+			return RegisterResult{}, readErr
+		}
 		return RegisterResult{}, fmt.Errorf("agent registration failed: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
@@ -173,7 +179,10 @@ func (a ControlPlaneAcknowledger) Acknowledge(ctx context.Context, agentID strin
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if readErr != nil {
+			return readErr
+		}
 		return fmt.Errorf("acknowledgement failed: status=%d body=%s", resp.StatusCode, string(body))
 	}
 	return nil

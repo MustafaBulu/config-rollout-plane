@@ -1,32 +1,37 @@
 # SafeConfig
 
-A backend architecture showcase project for safe runtime configuration delivery.
+SafeConfig is a Go backend project for rolling out runtime configuration safely.
 
-SafeConfig demonstrates a production-style control-plane/data-plane architecture for distributing
-configuration changes to running services without redeploying application binaries. The project is
-written in Go and focuses on the safety mechanics around configuration definitions, immutable
-versions, agent identity, snapshot delivery, acknowledgements, and last-known-good local caching.
+It models the split used in real internal platforms: a write-heavy control plane owns definitions,
+versions, rollouts, agent identity, acknowledgements, and guardrails; a read-optimized data plane
+serves snapshots to local agents; applications read from the local agent instead of calling the
+control plane directly.
 
-The design goal is not to build a feature flag SaaS clone. The core problem is safer operational
-configuration delivery: services should be able to receive runtime config updates, validate them,
-acknowledge the exact version they received, and continue operating from a local cache during backend
-outages.
+The interesting part is not "feature flags". The project focuses on the failure modes around
+operational configuration:
 
-Percentage rollout stages, deterministic agent assignment, frozen target cohorts, acknowledgement
-coverage, deployment-timeout rollback, Prometheus health guardrails, automatic health-based rollback,
-and rollback verification are implemented.
+- a bad value should be rejected before it becomes a version
+- agents should receive the exact version intended for them
+- percentage rollout cohorts should be deterministic and stable
+- rollout promotion should wait for acknowledgement coverage
+- health guardrails should stop or roll back unsafe changes
+- applications should continue from a last-known-good local cache during backend outages
+
+## Highlights
+
+- Go 1.26, standard-library HTTP handlers, PostgreSQL, and structured JSON logs
+- JSON Schema validation, immutable config versions, and stable environment pointers
+- Agent registration, instance credentials, heartbeats, and acknowledgements
+- Data-plane snapshots with ETag support and credential/path mismatch protection
+- Local agent cache with checksum validation and atomic last-known-good writes
+- Deterministic 5/25/100 rollouts with frozen cohorts and acknowledgement gates
+- Prometheus guardrails, automatic rollback, and rollback verification
+- Config-as-code, simulator, reliability harness, Docker, Kubernetes, and AWS/EKS scaffolding
 
 ## Architecture
 
-The platform is organized as a Go monorepo with four runnable binaries.
-
-- `control-plane`: authoritative API for tenants, config definitions, immutable versions, stable environment state, agent registration, heartbeats, and acknowledgements.
-- `data-plane`: read-optimized API that serves agent-specific configuration snapshots with ETag support.
-- `agent`: local sidecar-style process that polls snapshots, validates checksums, writes a durable cache, and exposes config to the application over localhost.
-- `simulator`: local virtual-agent load simulator for scale evidence.
-
 ```text
-Developer / API client
+Config author / CLI
         |
         v
 Control Plane  -> PostgreSQL
@@ -35,121 +40,67 @@ Control Plane  -> PostgreSQL
 Data Plane
         |
         v
-Local Agent  -> application service
+Local Agent  -> application process
 ```
 
-The control-plane registry can run against PostgreSQL for durable state. Tests and quick local runs can
-use the in-memory store behind the same Go interface.
+Command entrypoints:
 
-## Configuration Delivery Flow
+- `cmd/control-plane`: tenant, config, version, stable state, rollout, agent, heartbeat, and acknowledgement APIs
+- `cmd/data-plane`: agent-specific snapshot API
+- `cmd/agent`: local HTTP agent and snapshot cache
+- `cmd/cfgctl`: config-as-code validation and apply CLI
+- `cmd/simulator`: virtual-agent rollout simulator
+- `cmd/reliability`: local failure-scenario harness
 
-1. A client creates a tenant.
-2. A client creates a configuration definition with a JSON Schema.
-3. Every new config value is validated against the schema.
-4. A valid value creates an immutable version.
-5. A version can be marked stable for an environment.
-6. An agent registers with a bootstrap token and receives an instance credential.
-7. The data plane serves an agent-specific snapshot.
-8. The local agent validates the snapshot checksum and writes it to disk atomically.
-9. The application reads config from the local agent.
-10. If the backend is unavailable later, the local agent keeps serving the last-known-good snapshot.
+The Spring Boot payment demo service in `examples/demo-service` reads config from the local agent and
+exports Prometheus metrics used by rollout guardrails.
 
-## Implemented Capabilities
+## Quick Start
 
-- Go 1.26 monorepo
-- HTTP/JSON APIs using the standard library
-- Structured JSON logging with `slog`
-- Graceful shutdown for all binaries
-- Tenant registry
-- Configuration definitions
-- JSON Schema validation
-- Immutable configuration versions
-- Stable version pointer per config/environment
-- PostgreSQL schema migrations
-- PostgreSQL-backed config registry store
-- In-memory stores for tests and local experiments
-- Agent registration with bootstrap credential exchange
-- Instance credentials bound to one agent identity
-- Agent heartbeat endpoint
-- Agent acknowledgement endpoint
-- Percentage rollout creation and inspection endpoints
-- Default 5/25/100 rollout stages
-- Deterministic rollout bucketing
-- Frozen rollout target cohorts
-- Acknowledgement coverage based promotion
-- Deployment-timeout rollback
-- Prometheus guardrail evaluation
-- Automatic health-based rollback
-- Rollback verification with VERIFIED/PARTIAL outcomes
-- 1000-agent virtual simulator
-- Simulator latency and throughput reporting
-- Spring Boot payment demo service
-- Demo service Prometheus metrics
-- Docker build files for local images
-- kind Kubernetes manifests for platform and demo workloads
-- Agent sidecar auto-registration for Kubernetes demos
-- Data-plane snapshot endpoint
-- Rollout-aware data-plane snapshots when PostgreSQL is configured
-- ETag and `If-None-Match` support
-- Credential/path mismatch protection with `403 Forbidden`
-- Agent snapshot polling client
-- Checksum validation before cache writes
-- Atomic local snapshot cache writes
-- Local agent config API
-- Unit and handler tests for core flows
-- Docker Compose PostgreSQL development environment
-- GitHub Actions CI
+This path runs the local agent against a seeded in-memory data plane. It is the fastest way to see
+the snapshot and local config API working.
 
-## Components
+The command examples use Bash-style environment variables. In PowerShell, set variables with
+`$env:NAME="value"` before running the matching `go run` command.
 
-### `cmd/control-plane`
+Terminal 1:
 
-Runs the control-plane HTTP API on port `8080` by default.
+```bash
+DATA_PLANE_AGENT_ID=agent-1 \
+DATA_PLANE_AGENT_TOKEN=dev-agent-token \
+DATA_PLANE_CONFIG_KEY=payment.failure_rate \
+DATA_PLANE_CONFIG_VALUE=0 \
+go run ./cmd/data-plane
+```
 
-Main responsibilities:
+Terminal 2:
 
-- config registry writes
-- schema validation
-- stable version state
-- agent registration
-- heartbeat tracking
-- acknowledgement recording
+```bash
+DATA_PLANE_URL=http://localhost:8081 \
+AGENT_ID=agent-1 \
+AGENT_INSTANCE_CREDENTIAL=dev-agent-token \
+go run ./cmd/agent
+```
 
-### `cmd/data-plane`
+Read the config from the local agent:
 
-Runs the data-plane HTTP API on port `8081` by default.
+```bash
+curl http://localhost:8082/v1/config/payment.failure_rate
+```
 
-Main responsibilities:
+Expected shape:
 
-- serve agent snapshots
-- enforce credential subject matching
-- return `304 Not Modified` when the agent already has the latest snapshot
+```json
+{
+  "key": "payment.failure_rate",
+  "version": 1,
+  "value": 0
+}
+```
 
-### `cmd/agent`
+## Full Local Flow
 
-Runs the local agent HTTP API on port `8082` by default.
-
-Main responsibilities:
-
-- poll the data plane
-- validate snapshot checksums
-- write and load local snapshot cache
-- serve config to local applications
-
-### `cmd/simulator`
-
-Runs a local in-memory 5/25/100 rollout simulation with virtual agents.
-
-Main responsibilities:
-
-- register virtual agents
-- read rollout-aware snapshots
-- acknowledge assigned rollout stages
-- report snapshot and acknowledgement latency
-
-## Local Runtime
-
-Start PostgreSQL:
+For the full control-plane/data-plane path, start PostgreSQL first:
 
 ```bash
 docker compose -f deploy/docker-compose/docker-compose.yml up -d
@@ -165,188 +116,165 @@ Run the control plane:
 
 ```bash
 DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' \
-AGENT_BOOTSTRAP_TOKEN='dev-bootstrap-token' \
+AGENT_BOOTSTRAP_TOKEN=dev-bootstrap-token \
 go run ./cmd/control-plane
 ```
 
-Run the data plane with a seeded demo snapshot:
+Run the data plane:
 
 ```bash
-DATA_PLANE_AGENT_ID='agent-1' \
-DATA_PLANE_AGENT_TOKEN='<instance credential>' \
-DATA_PLANE_CONFIG_KEY='payment.authorization.timeout' \
-DATA_PLANE_CONFIG_VALUE='1500' \
+DATABASE_URL='postgres://safe_config:safe_config@localhost:5432/safe_config?sslmode=disable' \
+DATA_PLANE_TENANTS=payments \
 go run ./cmd/data-plane
 ```
 
-Run the local agent:
+Load the demo config-as-code manifests:
 
 ```bash
-DATA_PLANE_URL='http://localhost:8081' \
-AGENT_ID='agent-1' \
-AGENT_INSTANCE_CREDENTIAL='<instance credential>' \
+go run ./cmd/cfgctl apply \
+  --control-plane-url http://localhost:8080 \
+  examples/config-as-code
+```
+
+Run an agent that auto-registers with the control plane:
+
+```bash
+CONTROL_PLANE_URL=http://localhost:8080 \
+DATA_PLANE_URL=http://localhost:8081 \
+AGENT_BOOTSTRAP_TOKEN=dev-bootstrap-token \
+AGENT_ID=payment-agent-1 \
+AGENT_SERVICE=payment-service \
+AGENT_ENVIRONMENT=production \
 go run ./cmd/agent
 ```
 
-## Example API Flow
-
-### 1. Create tenant
+Then read the active config through the agent:
 
 ```bash
-curl -X POST localhost:8080/v1/tenants \
-  -H "Content-Type: application/json" \
-  -d '{"id":"payments","name":"Payments"}'
+curl http://localhost:8082/v1/config/payment.failure_rate
 ```
 
-### 2. Create config definition
+## Config-As-Code
+
+Example manifests live in `examples/config-as-code`.
+
+Validate them:
 
 ```bash
-curl -X POST localhost:8080/v1/tenants/payments/configs \
-  -H "Content-Type: application/json" \
-  -d '{"key":"payment.authorization.timeout","schema":{"type":"integer","minimum":100,"maximum":10000},"default":2000}'
+go run ./cmd/cfgctl validate examples/config-as-code
 ```
 
-### 3. Create immutable version
+Preview an apply without writing:
 
 ```bash
-curl -X POST localhost:8080/v1/tenants/payments/configs/payment.authorization.timeout/versions \
-  -H "Content-Type: application/json" \
-  -d '{"value":1500,"created_by":"developer@example.com"}'
+go run ./cmd/cfgctl apply --dry-run examples/config-as-code
 ```
 
-### 4. Mark version stable
+Apply definitions, versions, and stable pointers:
 
 ```bash
-curl -X POST localhost:8080/v1/tenants/payments/configs/payment.authorization.timeout/environments/production/stable \
-  -H "Content-Type: application/json" \
-  -d '{"version_number":1}'
+go run ./cmd/cfgctl apply \
+  --control-plane-url http://localhost:8080 \
+  examples/config-as-code
 ```
 
-### 5. Register agent
+Rollout manifests are skipped by default during writes. Start them explicitly:
 
 ```bash
-curl -X POST localhost:8080/v1/agents/register \
-  -H "Content-Type: application/json" \
-  -d '{"bootstrap_token":"dev-bootstrap-token","id":"agent-1","service":"payment-api","environment":"production","instance":"payment-api-1"}'
+go run ./cmd/cfgctl apply \
+  --control-plane-url http://localhost:8080 \
+  --include-rollouts \
+  examples/config-as-code
 ```
 
-Copy the returned `instance_credential` and use it for data-plane and local-agent requests.
+`SAFECONFIG_CONTROL_PLANE_URL` and `SAFECONFIG_TOKEN` can be used instead of the matching flags.
 
-### 6. Read config from local agent
+## Simulator
+
+The simulator creates virtual agents, walks a 5/25/100 rollout, reads rollout-aware snapshots, sends
+acknowledgements, and prints latency/throughput numbers.
 
 ```bash
-curl localhost:8082/v1/config/payment.authorization.timeout
+go run ./cmd/simulator -agents 1000 -concurrency 64
 ```
 
-Example response:
+JSON output is available when the result needs to be captured by another tool:
 
-```json
-{
-  "key": "payment.authorization.timeout",
-  "version": 1,
-  "value": 1500
-}
+```bash
+go run ./cmd/simulator -agents 1000 -concurrency 64 -format json
 ```
 
-## Service URLs
+## Reliability
 
-- Control plane: `http://localhost:8080`
-- Data plane: `http://localhost:8081`
-- Local agent: `http://localhost:8082`
+The reliability harness exercises the failure behavior that the project is built around.
+
+```bash
+go run ./cmd/reliability -scenario all -concurrency 32
+```
+
+Available scenarios:
+
+- `control-plane-restart`
+- `data-plane-outage`
+- `concurrent-rollout-acknowledgements`
+- `rollback-propagation-timing`
+
+JSON output:
+
+```bash
+go run ./cmd/reliability -scenario all -concurrency 32 -format json
+```
 
 ## APIs
 
-Control plane:
+OpenAPI documentation is in `api/openapi.yaml`.
 
-- `POST /v1/tenants`
-- `GET /v1/tenants`
-- `GET /v1/tenants/{tenant}`
-- `POST /v1/tenants/{tenant}/configs`
-- `GET /v1/tenants/{tenant}/configs`
-- `GET /v1/tenants/{tenant}/configs/{key}`
-- `POST /v1/tenants/{tenant}/configs/{key}/versions`
-- `GET /v1/tenants/{tenant}/configs/{key}/versions`
-- `POST /v1/tenants/{tenant}/configs/{key}/environments/{environment}/stable`
-- `GET /v1/tenants/{tenant}/configs/{key}/environments/{environment}/stable`
-- `POST /v1/agents/register`
-- `POST /v1/agents/{agentID}/heartbeat`
-- `POST /v1/agents/{agentID}/acknowledgements`
-- `POST /v1/rollouts`
-- `GET /v1/rollouts/{rolloutID}`
+Main control-plane groups:
 
-Data plane:
+- health: `GET /healthz`, `GET /livez`, `GET /readyz`
+- tenants: `POST /v1/tenants`, `GET /v1/tenants`, `GET /v1/tenants/{tenant}`
+- configs: create/list/get definitions, create/list versions, set/get stable versions
+- agents: register, heartbeat, acknowledgements
+- rollouts: create and inspect rollout state
+
+Data-plane API:
 
 - `GET /v1/agents/{agentID}/snapshot`
 
-Local agent:
+Local-agent API:
 
-- `GET /healthz`
-- `GET /readyz`
 - `GET /v1/snapshot`
 - `GET /v1/config/{key}`
 
-Demo service:
+Demo service API:
 
 - `GET /v1/payments/authorize`
 - `GET /actuator/health`
 - `GET /actuator/prometheus`
 
-OpenAPI documentation is available in `api/openapi.yaml`.
-
 ## Configuration
 
-Control plane:
+Most local defaults are intentionally usable without extra files.
 
-- `CONTROL_PLANE_ADDR` default: `:8080`
-- `DATABASE_URL`
-- `AGENT_BOOTSTRAP_TOKEN` default: `dev-bootstrap-token`
-- `AGENT_CREDENTIAL_TTL` default: `15m`
-- `PROMETHEUS_URL` optional Prometheus base URL for rollout guardrails
-- `PROMETHEUS_QUERY_TIMEOUT` default: `2s`
-- `ROLLOUT_RECONCILE_INTERVAL` default: `2s`
+| Area | Main variables |
+| --- | --- |
+| Common | `DATABASE_URL`, `LOG_LEVEL=debug` |
+| Control plane | `CONTROL_PLANE_ADDR`, `AGENT_BOOTSTRAP_TOKEN`, `AGENT_CREDENTIAL_TTL`, `PROMETHEUS_URL`, `ROLLOUT_RECONCILE_INTERVAL` |
+| Data plane | `DATA_PLANE_ADDR`, `DATA_PLANE_TENANTS`, `DATA_PLANE_AGENT_ID`, `DATA_PLANE_AGENT_TOKEN`, `DATA_PLANE_CONFIG_KEY`, `DATA_PLANE_CONFIG_VALUE` |
+| Agent | `AGENT_ADDR`, `DATA_PLANE_URL`, `CONTROL_PLANE_URL`, `AGENT_ID`, `AGENT_INSTANCE_CREDENTIAL`, `AGENT_BOOTSTRAP_TOKEN`, `AGENT_SERVICE`, `AGENT_ENVIRONMENT`, `AGENT_CACHE_PATH`, `AGENT_POLL_INTERVAL` |
 
-Data plane:
+Each HTTP service also supports read, write, idle, and shutdown timeout env vars using its own
+prefix, such as `CONTROL_PLANE_READ_TIMEOUT` or `AGENT_SHUTDOWN_TIMEOUT`.
 
-- `DATA_PLANE_ADDR` default: `:8081`
-- `DATABASE_URL`
-- `DATA_PLANE_TENANTS` optional comma-separated tenant filter for dynamic snapshots
-- `DATA_PLANE_TENANT_ID` optional single-tenant filter for dynamic snapshots
-- `DATA_PLANE_AGENT_ID`
-- `DATA_PLANE_AGENT_TOKEN`
-- `DATA_PLANE_CONFIG_KEY`
-- `DATA_PLANE_CONFIG_VALUE`
+## Verification
 
-Agent:
-
-- `AGENT_ADDR` default: `:8082`
-- `DATA_PLANE_URL`
-- `AGENT_ID`
-- `AGENT_INSTANCE_CREDENTIAL`
-- `CONTROL_PLANE_URL` optional, enables agent auto-registration and acknowledgements
-- `AGENT_BOOTSTRAP_TOKEN` required for auto-registration
-- `AGENT_SERVICE` or `SERVICE_NAME` default: `payment-service`
-- `AGENT_ENVIRONMENT` or `ENVIRONMENT` default: `production`
-- `AGENT_INSTANCE` default: `AGENT_ID`
-- `AGENT_CACHE_PATH` default: `var/safeconfig/snapshot.json`
-- `AGENT_POLL_INTERVAL` default: `2s`
-
-Demo service:
-
-- `SERVER_PORT` default: `8090`
-- `SAFECONFIG_AGENT_URL` default: `http://localhost:8082`
-- `SAFECONFIG_FAILURE_RATE_KEY` default: `payment.failure_rate`
-- `DEMO_DEFAULT_FAILURE_RATE` default: `0.0`
-- `SAFECONFIG_REQUEST_TIMEOUT` default: `500ms`
-
-## Test
-
-Run all tests:
+Run the Go test suite:
 
 ```bash
 go test ./...
 ```
 
-Build all binaries:
+Build all Go commands:
 
 ```bash
 go build ./cmd/...
@@ -356,6 +284,16 @@ Run static checks:
 
 ```bash
 go vet ./...
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+```
+
+The same checks are available through Make:
+
+```bash
+make test
+make build
+make lint
+make config-validate
 ```
 
 Optional PostgreSQL integration test:
@@ -365,118 +303,41 @@ SAFE_CONFIG_TEST_DATABASE_URL='postgres://safe_config:safe_config@localhost:5432
 go test ./internal/storage/postgres
 ```
 
-Demo service test:
+Demo service tests:
 
 ```bash
 cd examples/demo-service
 mvn test
 ```
 
-Kubernetes manifest validation:
+## Kubernetes and AWS
+
+Local Kubernetes manifests use Kustomize and are documented in `deploy/kubernetes/README.md`.
+
+Render them locally:
 
 ```bash
 kubectl kustomize deploy/kubernetes/base
 kubectl kustomize deploy/kubernetes/demo
 ```
 
-The local Kubernetes demo is documented in `deploy/kubernetes/README.md`.
-The recorded Kubernetes demo scenario is documented in `docs/kubernetes-demo-scenario.md`.
-The reliability scenario harness is documented in `docs/reliability-scenarios.md`.
-The latest local reliability evidence is documented in `docs/reliability-results.md`.
-
-## Scale Simulator
-
-Run the default 1000-agent local simulation:
+AWS Terraform lives in `deploy/terraform/aws` and prepares the showcase VPC, EKS cluster, node group,
+security groups, IAM roles, and optional ECR repositories.
 
 ```bash
-go run ./cmd/simulator -agents 1000 -concurrency 64
+terraform -chdir=deploy/terraform/aws init
+terraform -chdir=deploy/terraform/aws validate
+terraform -chdir=deploy/terraform/aws plan
 ```
 
-The simulator is documented in `docs/scale-simulator.md`.
-
-## Reliability Evidence
-
-Run the local reliability evidence suite:
+AWS/EKS Kubernetes overlays live in `deploy/kubernetes/aws`.
 
 ```bash
-make reliability
+make aws-platform-render
+make aws-demo-render
 ```
 
-Equivalent direct command:
-
-```bash
-go run ./cmd/reliability -scenario all -concurrency 32
-```
-
-The latest recorded local result is documented in `docs/reliability-results.md`.
-
-## AWS Terraform
-
-The AWS showcase Terraform root module is in `deploy/terraform/aws`.
-
-It prepares the VPC, subnets, routing, security groups, base IAM roles, EKS cluster, and default
-managed node group.
-
-```bash
-cd deploy/terraform/aws
-terraform init
-terraform validate
-terraform plan
-```
-
-After `terraform apply`, configure and validate `kubectl`:
-
-```bash
-make eks-kubeconfig
-make eks-nodes
-```
-
-Do not run `terraform apply` unless you are ready to create billable AWS resources. Destroy the
-showcase stack after testing.
-
-## Config-as-Code
-
-SafeConfig YAML manifests use `apiVersion`, `kind`, `metadata`, and `spec` fields. The workflow
-validates manifests in CI and can apply reviewed manifests to the control plane.
-
-Example manifests live in `examples/config-as-code`.
-
-Validate them locally:
-
-```bash
-go run ./cmd/cfgctl validate examples/config-as-code
-```
-
-The same validation runs in GitHub Actions through:
-
-```bash
-make config-validate
-```
-
-Preview the apply plan without writing:
-
-```bash
-go run ./cmd/cfgctl apply --dry-run examples/config-as-code
-```
-
-Apply reviewed manifests to a running control plane:
-
-```bash
-go run ./cmd/cfgctl apply \
-  --control-plane-url http://localhost:8080 \
-  examples/config-as-code
-```
-
-Rollout manifests are skipped by default during writes. Start rollout manifests explicitly:
-
-```bash
-go run ./cmd/cfgctl apply \
-  --control-plane-url http://localhost:8080 \
-  --include-rollouts \
-  examples/config-as-code
-```
-
-`SAFECONFIG_CONTROL_PLANE_URL` and `SAFECONFIG_TOKEN` can be used instead of the corresponding flags.
+Do not run `terraform apply` unless you are ready to create billable AWS resources.
 
 ## Security Notes
 
@@ -485,8 +346,4 @@ go run ./cmd/cfgctl apply \
 - Development bootstrap tokens are for local use only.
 - Instance credentials are bound to one agent identity.
 - Snapshot requests reject credential/path mismatches with `403 Forbidden`.
-- Token rotation, authorization policy, and persistent audit hardening should be completed before production use.
-
-## Planned Work
-
-- Multi-replica control plane behavior
+- Token rotation, authorization policy, and persistent audit hardening are intentionally left as later production work.

@@ -1,4 +1,4 @@
-.PHONY: build test fmt vet config-validate simulate reliability terraform-fmt terraform-validate eks-kubeconfig eks-nodes dev-up dev-down migrate-up clean
+.PHONY: build test fmt vet staticcheck lint config-validate simulate reliability terraform-fmt terraform-validate eks-kubeconfig eks-nodes aws-platform-render aws-demo-render aws-apply-platform aws-apply-demo aws-wait-platform aws-wait-demo aws-smoke aws-delete-k8s terraform-destroy dev-up dev-down migrate-up clean
 
 COMPOSE_FILE := deploy/docker-compose/docker-compose.yml
 AWS_TERRAFORM_DIR := deploy/terraform/aws
@@ -14,6 +14,11 @@ fmt:
 
 vet:
 	go vet ./...
+
+staticcheck:
+	go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+
+lint: vet staticcheck
 
 config-validate:
 	go run ./cmd/cfgctl validate examples/config-as-code
@@ -35,6 +40,39 @@ eks-kubeconfig:
 
 eks-nodes:
 	kubectl get nodes
+
+aws-platform-render:
+	kubectl kustomize deploy/kubernetes/aws/platform
+
+aws-demo-render:
+	kubectl kustomize deploy/kubernetes/aws/demo
+
+aws-apply-platform:
+	kubectl apply -k deploy/kubernetes/aws/platform
+
+aws-apply-demo:
+	kubectl apply -k deploy/kubernetes/aws/demo
+
+aws-wait-platform:
+	kubectl -n safe-config-system wait --for=condition=available deploy/postgres --timeout=180s
+	kubectl -n safe-config-system wait --for=condition=complete job/safeconfig-migrations --timeout=180s
+	kubectl -n safe-config-system wait --for=condition=available deploy/control-plane --timeout=180s
+	kubectl -n safe-config-system wait --for=condition=available deploy/data-plane --timeout=180s
+	kubectl -n safe-config-system wait --for=condition=available deploy/prometheus --timeout=180s
+
+aws-wait-demo:
+	kubectl -n demo rollout status deploy/payment-demo-service --timeout=240s
+
+aws-smoke:
+	kubectl -n safe-config-system get deploy,svc,pods
+	kubectl -n demo get deploy,svc,pods
+
+aws-delete-k8s:
+	kubectl delete -k deploy/kubernetes/aws/demo --ignore-not-found
+	kubectl delete -k deploy/kubernetes/aws/platform --ignore-not-found
+
+terraform-destroy:
+	terraform -chdir=$(AWS_TERRAFORM_DIR) destroy
 
 dev-up:
 	docker compose -f $(COMPOSE_FILE) up -d

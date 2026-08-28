@@ -290,7 +290,9 @@ func (a Applier) get(ctx context.Context, path string, dst any) (int, error) {
 		}
 		return resp.StatusCode, nil
 	}
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 1024)); err != nil {
+		return 0, err
+	}
 	return resp.StatusCode, nil
 }
 
@@ -312,7 +314,10 @@ func (a Applier) post(ctx context.Context, path string, payload any, expectedSta
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != expectedStatus {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		if readErr != nil {
+			return readErr
+		}
 		return fmt.Errorf("POST %s returned status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	if dst != nil {
@@ -320,7 +325,9 @@ func (a Applier) post(ctx context.Context, path string, payload any, expectedSta
 			return err
 		}
 	} else {
-		io.Copy(io.Discard, resp.Body)
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			return err
+		}
 	}
 	return nil
 }
